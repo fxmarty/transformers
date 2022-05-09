@@ -134,29 +134,20 @@ jobs:
         folders: ${{ fromJson(needs.setup.outputs.matrix) }}
     runs-on: [self-hosted, docker-gpu, single-gpu]
     container:
-      image: pytorch/pytorch:1.9.0-cuda11.1-cudnn8-runtime
+      image: huggingface/transformers-all-latest-gpu
       options: --gpus 0 --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
     steps:
-      - name: Install dependencies
-        run: |
-          apt -y update && apt install -y software-properties-common && apt -y update && add-apt-repository -y ppa:git-core/ppa && apt -y update && apt install -y git
-          apt install -y libsndfile1-dev espeak-ng
-          pip install --upgrade pip
-          pip install .[sklearn,testing,onnxruntime,sentencepiece,torch-speech,vision,timm]
-          pip install https://github.com/kpu/kenlm/archive/master.zip
-
-      - name: Launcher docker
-        uses: actions/checkout@v2
-        with:
-          fetch-depth: 2
 
       - name: NVIDIA-SMI
         run: |
           nvidia-smi
 
       - name: Are GPUs recognized by our DL frameworks
+        working-directory: /transformers
         run: |
           utils/print_env_pt.py
+          TF_CPP_MIN_LOG_LEVEL=3 python3 -c "import tensorflow as tf; print('TF GPUs available:', bool(tf.config.list_physical_devices('GPU')))"
+          TF_CPP_MIN_LOG_LEVEL=3 python3 -c "import tensorflow as tf; print('Number of TF GPUs available:', len(tf.config.list_physical_devices('GPU')))"
 
       - name: Echo folder ${{ matrix.folders }}
         shell: bash
@@ -171,11 +162,14 @@ jobs:
           echo "$matrix_folders"
           echo "matrix_folders=$matrix_folders" >> $GITHUB_ENV
 
+      - name: Update clone
+        working-directory: /transformers
+        run: git fetch && git checkout ${{ github.sha }}
+
       - name: Run all non-slow selected tests on GPU
+        working-directory: /transformers
         run: |
           python -m pytest -n 2 --dist=loadfile -v --make-reports=tests_torch_gpu ${{ fromJson(needs.setup.outputs.test_map)[matrix.folders] }}
-
-
 
       - name: Failure short reports
         if: ${{ failure() }}
