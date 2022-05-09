@@ -169,7 +169,7 @@ jobs:
       - name: Run all non-slow selected tests on GPU
         working-directory: /transformers
         run: |
-          python -m pytest -n 2 --dist=loadfile -v --make-reports=tests_torch_gpu ${{ fromJson(needs.setup.outputs.test_map)[matrix.folders] }}
+          python3 -m pytest -n 2 --dist=loadfile -v --make-reports=tests_torch_gpu ${{ fromJson(needs.setup.outputs.test_map)[matrix.folders] }}
 
       - name: Failure short reports
         if: ${{ failure() }}
