@@ -70,7 +70,7 @@ jobs:
       matrix:
         folders: ${{ fromJson(needs.setup.outputs.matrix) }}
         machines: [single-gpu]
-    runs-on: [self-hosted, ydshieh, temp, '${{ matrix.machines }}']
+    runs-on: [self-hosted, ydshieh, temp, single-gpu]
     # runs-on: [self-hosted, docker-gpu, '${{ matrix.machines }}']
     container:
       image: huggingface/transformers-all-latest-gpu
@@ -132,7 +132,7 @@ jobs:
       matrix:
         folders: ${{ fromJson(needs.setup.outputs.matrix) }}
         machines: [multi-gpu]
-    runs-on: [self-hosted, ydshieh, temp, '${{ matrix.machines }}']
+    runs-on: [self-hosted, ydshieh, temp, multi-gpu]
     # runs-on: [self-hosted, docker-gpu, '${{ matrix.machines }}']
     container:
       image: huggingface/transformers-all-latest-gpu
@@ -191,8 +191,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        machines: [single-gpu, multi-gpu]
-    runs-on: [self-hosted, ydshieh, temp, '${{ matrix.machines }}']
+        machines: [single-gpu]
+    runs-on: [self-hosted, ydshieh, temp, single-gpu]
     # runs-on: [self-hosted, docker-gpu, '${{ matrix.machines }}']
     container:
       image: huggingface/transformers-pytorch-deepspeed-latest-gpu
