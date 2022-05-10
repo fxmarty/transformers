@@ -1549,7 +1549,7 @@ class ModelTesterMixin:
         return new_tf_outputs, new_pt_outputs
 
     # Copied from tests.test_modeling_tf_common.TFModelTesterMixin.check_pt_tf_outputs
-    def check_pt_tf_outputs(self, tf_outputs, pt_outputs, model_class, tol=1e-5, name="outputs", attributes=None):
+    def check_pt_tf_outputs(self, tf_outputs, pt_outputs, model_class, tol=1e-11, name="outputs", attributes=None):
         """Check the outputs from PyTorch and TensorFlow models are closed enough. Checks are done in a recursive way.
 
         Args:
@@ -1688,7 +1688,7 @@ class ModelTesterMixin:
 
         self.check_pt_tf_outputs(tf_outputs, pt_outputs, type(pt_model))
 
-    @is_pt_tf_cross_test
+    # @is_pt_tf_cross_test
     def test_pt_tf_model_equivalence(self):
         import transformers
 
