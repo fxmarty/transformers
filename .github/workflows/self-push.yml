@@ -123,7 +123,7 @@ jobs:
   run_tests_multi_gpu:
     name: Model Tests on multi GPU
     needs: setup
-    if: !contains(fromJson(needs.setup.outputs.matrix), 'dummy') != true
+    if: contains(fromJson(needs.setup.outputs.matrix), 'dummy') != true
     strategy:
       fail-fast: false
       matrix:
