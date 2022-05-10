@@ -256,5 +256,6 @@ jobs:
         # We pass `needs.setup.outputs.matrix` as the argument. A processing in `notification_service.py` to change
         # `models/bert` to `models_bert` is required, as the artifact names use `_` instead of `/`.
         run: |
+          echo 3
           pip install slack_sdk
           python utils/notification_service_push.py "${{ needs.setup.outputs.matrix }}"
