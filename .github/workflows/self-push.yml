@@ -69,8 +69,8 @@ jobs:
       matrix:
         folders: ${{ fromJson(needs.setup.outputs.matrix) }}
         machines: [single-gpu]
-    # runs-on: [self-hosted, ydshieh, temp, single-gpu]
-    runs-on: [self-hosted, docker-gpu, '${{ matrix.machines }}']
+    runs-on: [self-hosted, ydshieh, temp, '${{ matrix.machines }}']
+    # runs-on: [self-hosted, docker-gpu, '${{ matrix.machines }}']
     container:
       image: huggingface/transformers-all-latest-gpu
       options: --gpus 0 --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
@@ -129,8 +129,8 @@ jobs:
       matrix:
         folders: ${{ fromJson(needs.setup.outputs.matrix) }}
         machines: [multi-gpu]
-    # runs-on: [self-hosted, ydshieh, temp, multi-gpu]
-    runs-on: [self-hosted, docker-gpu, '${{ matrix.machines }}']
+    runs-on: [self-hosted, ydshieh, temp, '${{ matrix.machines }}']
+    # runs-on: [self-hosted, docker-gpu, '${{ matrix.machines }}']
     container:
       image: huggingface/transformers-all-latest-gpu
       options: --gpus 0 --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
@@ -188,8 +188,8 @@ jobs:
       fail-fast: false
       matrix:
         machines: [single-gpu, multi-gpu]
-    # runs-on: [self-hosted, ydshieh, temp, single-gpu]
-    runs-on: [self-hosted, docker-gpu, '${{ matrix.machines }}']
+    runs-on: [self-hosted, ydshieh, temp, '${{ matrix.machines }}']
+    # runs-on: [self-hosted, docker-gpu, '${{ matrix.machines }}']
     container:
       image: huggingface/transformers-pytorch-deepspeed-latest-gpu
       options: --gpus all --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
@@ -233,28 +233,28 @@ jobs:
           name: ${{ matrix.machines }}_run_tests_torch_cuda_extensions_gpu_test_reports
           path: /workspace/transformers/reports/${{ matrix.machines }}_tests_torch_cuda_extensions_gpu
 
-#  send_results:
-#    name: Send results to webhook
-#    runs-on: ubuntu-latest
-#    if: always()
-#    needs: [
-#        setup,
-#        run_tests_single_gpu,
-#        run_tests_multi_gpu,
-#        run_tests_torch_cuda_extensions_gpu
-#    ]
-#    steps:
-#      - uses: actions/checkout@v2
-#      - uses: actions/download-artifact@v2
-#      - name: Send message to Slack
-#        env:
-#          CI_SLACK_BOT_TOKEN: ${{ secrets.CI_SLACK_BOT_TOKEN }}
-#          CI_SLACK_CHANNEL_ID: ${{ secrets.CI_SLACK_CHANNEL_ID }}
-#          # CI_SLACK_CHANNEL_ID_DAILY: ${{ secrets.CI_SLACK_CHANNEL_ID_DAILY }}
-#          CI_SLACK_CHANNEL_ID_DAILY: ${{ secrets.CI_SLACK_CHANNEL_DUMMY_TESTS }}
-#          CI_SLACK_CHANNEL_DUMMY_TESTS: ${{ secrets.CI_SLACK_CHANNEL_DUMMY_TESTS }}
-#        # We pass `needs.setup.outputs.matrix` as the argument. A processing in `notification_service.py` to change
-#        # `models/bert` to `models_bert` is required, as the artifact names use `_` instead of `/`.
-#        run: |
-#          pip install slack_sdk
-#          python utils/notification_service_push.py "${{ needs.setup.outputs.matrix }}"
+  send_results:
+    name: Send results to webhook
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [
+        setup,
+        run_tests_single_gpu,
+        run_tests_multi_gpu,
+        run_tests_torch_cuda_extensions_gpu
+    ]
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/download-artifact@v2
+      - name: Send message to Slack
+        env:
+          CI_SLACK_BOT_TOKEN: ${{ secrets.CI_SLACK_BOT_TOKEN }}
+          CI_SLACK_CHANNEL_ID: ${{ secrets.CI_SLACK_CHANNEL_ID }}
+          # CI_SLACK_CHANNEL_ID_DAILY: ${{ secrets.CI_SLACK_CHANNEL_ID_DAILY }}
+          CI_SLACK_CHANNEL_ID_DAILY: ${{ secrets.CI_SLACK_CHANNEL_DUMMY_TESTS }}
+          CI_SLACK_CHANNEL_DUMMY_TESTS: ${{ secrets.CI_SLACK_CHANNEL_DUMMY_TESTS }}
+        # We pass `needs.setup.outputs.matrix` as the argument. A processing in `notification_service.py` to change
+        # `models/bert` to `models_bert` is required, as the artifact names use `_` instead of `/`.
+        run: |
+          pip install slack_sdk
+          python utils/notification_service_push.py "${{ needs.setup.outputs.matrix }}"
