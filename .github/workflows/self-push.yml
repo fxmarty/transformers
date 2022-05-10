@@ -63,7 +63,7 @@ jobs:
   run_tests_single_gpu:
     name: Model Tests on single GPU
     needs: setup
-    if: !contains(fromJson(needs.setup.outputs.matrix), 'dummy')
+    # if: !contains(fromJson(needs.setup.outputs.matrix), 'dummy')
     strategy:
       fail-fast: false
       matrix:
@@ -123,7 +123,7 @@ jobs:
   run_tests_multi_gpu:
     name: Model Tests on multi GPU
     needs: setup
-    if: !contains(fromJson(needs.setup.outputs.matrix), 'dummy')
+    # if: !contains(fromJson(needs.setup.outputs.matrix), 'dummy')
     strategy:
       fail-fast: false
       matrix:
@@ -183,7 +183,7 @@ jobs:
   run_tests_torch_cuda_extensions_gpu:
     name: Torch CUDA extension tests
     needs: setup
-    if: contains(fromJson(needs.setup.outputs.matrix), 'deepspeed') or contains(fromJson(needs.setup.outputs.matrix), 'extended')
+    # if: contains(fromJson(needs.setup.outputs.matrix), 'deepspeed') or contains(fromJson(needs.setup.outputs.matrix), 'extended')
     strategy:
       fail-fast: false
       matrix:
