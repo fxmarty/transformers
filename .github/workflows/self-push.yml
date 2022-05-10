@@ -69,8 +69,8 @@ jobs:
       matrix:
         folders: ${{ fromJson(needs.setup.outputs.matrix) }}
         machines: [single-gpu]
-    runs-on: [self-hosted, ydshieh, temp, single-gpu]
-    # runs-on: [self-hosted, docker-gpu, '${{ matrix.machines }}']
+    # runs-on: [self-hosted, ydshieh, temp, single-gpu]
+    runs-on: [self-hosted, docker-gpu, '${{ matrix.machines }}']
     container:
       image: huggingface/transformers-all-latest-gpu
       options: --gpus 0 --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
@@ -129,8 +129,8 @@ jobs:
       matrix:
         folders: ${{ fromJson(needs.setup.outputs.matrix) }}
         machines: [multi-gpu]
-    runs-on: [self-hosted, ydshieh, temp, multi-gpu]
-    # runs-on: [self-hosted, docker-gpu, '${{ matrix.machines }}']
+    # runs-on: [self-hosted, ydshieh, temp, multi-gpu]
+    runs-on: [self-hosted, docker-gpu, '${{ matrix.machines }}']
     container:
       image: huggingface/transformers-all-latest-gpu
       options: --gpus 0 --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
@@ -187,9 +187,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        machines: [single-gpu]
-    runs-on: [self-hosted, ydshieh, temp, single-gpu]
-    # runs-on: [self-hosted, docker-gpu, '${{ matrix.machines }}']
+        machines: [single-gpu, multi-gpu]
+    # runs-on: [self-hosted, ydshieh, temp, single-gpu]
+    runs-on: [self-hosted, docker-gpu, '${{ matrix.machines }}']
     container:
       image: huggingface/transformers-pytorch-deepspeed-latest-gpu
       options: --gpus all --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
