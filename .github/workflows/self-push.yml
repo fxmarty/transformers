@@ -132,7 +132,7 @@ jobs:
       fail-fast: false
       matrix:
         folders: ${{ fromJson(needs.setup.outputs.matrix) }}
-    runs-on: [self-hosted, docker-gpu, single-gpu]
+    runs-on: [self-hosted, ydshieh, temp, test-ci]
     container:
       image: huggingface/transformers-all-latest-gpu
       options: --gpus 0 --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
