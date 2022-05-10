@@ -61,7 +61,6 @@ jobs:
           echo "::set-output name=test_map::$test_map"
 
   run_tests_single_gpu:
-
     name: Model Tests on single GPU
     needs: setup
     if: !contains(fromJson(needs.setup.outputs.matrix), 'dummy')
@@ -76,7 +75,6 @@ jobs:
       image: huggingface/transformers-all-latest-gpu
       options: --gpus 0 --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
     steps:
-
       - name: NVIDIA-SMI
         run: |
           nvidia-smi
@@ -123,7 +121,6 @@ jobs:
           path: /transformers/reports/${{ matrix.machines }}_tests_gpu_${{ matrix.folders }}
 
   run_tests_multi_gpu:
-
     name: Model Tests on multi GPU
     needs: setup
     if: !contains(fromJson(needs.setup.outputs.matrix), 'dummy')
@@ -138,7 +135,6 @@ jobs:
       image: huggingface/transformers-all-latest-gpu
       options: --gpus 0 --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
     steps:
-
       - name: NVIDIA-SMI
         run: |
           nvidia-smi
