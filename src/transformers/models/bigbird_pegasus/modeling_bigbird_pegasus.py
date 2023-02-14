@@ -382,7 +382,7 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
         attn_mask_penalty = -10000.0
 
         # generate random attention and corresponding masks
-        np.random.seed(seed)
+        torch.manual_seed(seed)
         print("from_seq_len", from_seq_len)
         if from_seq_len in [1024, 3072, 4096]:  # old plans used in paper
             rand_attn = [
