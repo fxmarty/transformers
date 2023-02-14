@@ -383,6 +383,7 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
 
         # generate random attention and corresponding masks
         np.random.seed(seed)
+        print("from_seq_len", from_seq_len)
         if from_seq_len in [1024, 3072, 4096]:  # old plans used in paper
             rand_attn = [
                 self._bigbird_block_rand_mask(
@@ -406,8 +407,7 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
                 plan_num_rand_blocks=plan_num_rand_blocks,
             )
 
-        rand_attn = np.stack(rand_attn, axis=0)
-        rand_attn = torch.tensor(rand_attn, device=query_layer.device, dtype=torch.long)
+        rand_attn = torch.stack(rand_attn, dim=0).to(dtype=torch.long).to(query_layer.device)
         rand_attn.unsqueeze_(0)
         rand_attn = torch.cat([rand_attn for _ in range(batch_size)], dim=0)
 
@@ -419,11 +419,13 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
         blocked_key_matrix = key_layer.view(bsz, n_heads, to_seq_len // to_block_size, to_block_size, -1)
         blocked_value_matrix = value_layer.view(bsz, n_heads, to_seq_len // to_block_size, to_block_size, -1)
 
+
         # preparing block for randn attn
         gathered_key = self.torch_gather_b2(blocked_key_matrix, rand_attn)
         gathered_key = gathered_key.view(
             bsz, n_heads, to_seq_len // to_block_size - 2, n_rand_blocks * to_block_size, -1
         )  # [bsz, n_heads, to_seq_len//to_block_size-2, n_rand_blocks, to_block_size, -1]
+
         gathered_value = self.torch_gather_b2(blocked_value_matrix, rand_attn)
         gathered_value = gathered_value.view(
             bsz, n_heads, to_seq_len // to_block_size - 2, n_rand_blocks * to_block_size, -1
@@ -462,6 +464,7 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
             ],
             dim=2,
         )  # [bsz, n_heads, (4+n_rand_blocks)*to_block_size, -1]
+
         second_value_mat = torch.cat(
             [
                 blocked_value_matrix[:, :, 0],
@@ -475,6 +478,8 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
 
         # [bsz, n_heads, from_block_size, -1] x [bsz, n_heads, (4+n_rand_blocks)*to_block_size, -1] ==> [bsz, n_heads, from_block_size, (4+n_rand_blocks)*to_block_size]
         second_product = self.torch_bmm_nd_transpose(blocked_query_matrix[:, :, 1], second_key_mat, ndim=4)
+
+
         second_seq_pad = torch.cat(
             [
                 to_mask[:, :, :, : 3 * to_block_size],
@@ -557,6 +562,7 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
             band_product, dim=-1
         )  # [bsz, n_heads, from_seq_len//from_block_size-4, from_block_size, (5+n_rand_blocks)*to_block_size]
 
+
         # contribution of sliding keys
         # [bsz, n_heads, m//from_block_size-4, from_block_size, 3*to_block_size] x [bsz, n_heads, from_seq_len//from_block_size-4, 3*to_block_size, -1]
         context_layer = self.torch_bmm_nd(
@@ -578,6 +584,7 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
         context_layer += torch.einsum(
             "bhlqk,bhkd->bhlqd", attn_weights[:, :, :, :, -to_block_size:], blocked_value_matrix[:, :, -1]
         )  # [bsz, n_heads, from_seq_len//from_block_size-4, from_block_size, to_block_size] x [bsz, n_heads, to_block_size, -1] ==> [bsz, n_heads, from_seq_len//from_block_size-4, from_block_size, -1]
+
 
         # 4th PART
         # last 2nd token attention scores
@@ -855,21 +862,23 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
             each block
         """
 
-        plan_from_length = []
-        plan_num_rand_blocks = []
+        plan_from_length = torch.full([2], -1, dtype=torch.int32)
+        plan_num_rand_blocks = torch.full([2], -1, dtype=torch.int32)
         if (2 * num_rand_blocks + 5) < (from_seq_length // from_block_size):
-            plan_from_length.append(int((2 * num_rand_blocks + 5) * from_block_size))
-            plan_num_rand_blocks.append(num_rand_blocks)
-            plan_from_length.append(from_seq_length)
-            plan_num_rand_blocks.append(0)
+            plan_from_length[0] = int((2 * num_rand_blocks + 5) * from_block_size)
+            plan_num_rand_blocks[0] = num_rand_blocks
+            plan_from_length[1] = from_seq_length
+            plan_num_rand_blocks[1] = 0
         elif (num_rand_blocks + 5) < (from_seq_length // from_block_size):
-            plan_from_length.append(int((num_rand_blocks + 5) * from_block_size))
-            plan_num_rand_blocks.append(num_rand_blocks // 2)
-            plan_from_length.append(from_seq_length)
-            plan_num_rand_blocks.append(num_rand_blocks - (num_rand_blocks // 2))
+            plan_from_length[0] = int((num_rand_blocks + 5) * from_block_size)
+            plan_num_rand_blocks[0] = num_rand_blocks // 2
+            plan_from_length[1] = from_seq_length
+            plan_num_rand_blocks[1] = num_rand_blocks - (num_rand_blocks // 2)
         else:
-            plan_from_length.append(from_seq_length)
-            plan_num_rand_blocks.append(num_rand_blocks)
+            plan_from_length[0] = from_seq_length
+            plan_num_rand_blocks[0] = num_rand_blocks
+            plan_from_length = plan_from_length[:1]
+            plan_num_rand_blocks = plan_num_rand_blocks[:1]
 
         return plan_from_length, plan_num_rand_blocks
 
@@ -978,12 +987,13 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
         # Total number of blocks in the mmask
         num_blocks = from_seq_length // from_block_size
         # Number of blocks per plan
-        plan_block_length = np.array(plan_from_length) // from_block_size
+        plan_block_length = plan_from_length // from_block_size
         # till when to follow plan
-        max_plan_idx = plan_from_length.index(from_seq_length)
+        #max_plan_idx = plan_from_length.index(from_seq_length)
+        max_plan_idx = (plan_from_length == from_seq_length).nonzero().item()
         # Random Attention adjacency list
         rand_attn = [
-            np.zeros((num_blocks, np.sum(plan_num_rand_blocks[: max_plan_idx + 1])), dtype=np.int32)
+            torch.zeros((num_blocks, torch.sum(plan_num_rand_blocks[:max_plan_idx + 1])), dtype=torch.int32)
             for i in range(num_heads)
         ]
 
@@ -997,8 +1007,8 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
                 # column indx start fromm plan_block_length[plan_idx-1] and ends at
                 # plan_block_length[plan_idx]
                 if plan_num_rand_blocks[plan_idx] > 0:
-                    rnd_r_cnt = int(np.sum(plan_num_rand_blocks[:plan_idx]))
-                    curr_r_cnt = int(np.sum(plan_num_rand_blocks[: plan_idx + 1]))
+                    rnd_r_cnt = int(torch.sum(plan_num_rand_blocks[:plan_idx]))
+                    curr_r_cnt = int(torch.sum(plan_num_rand_blocks[: plan_idx + 1]))
                     for blk_rw_idx in range(global_block_top, plan_block_length[plan_idx - 1]):
                         for h in range(num_heads):
                             rand_attn[h][blk_rw_idx, rnd_r_cnt:curr_r_cnt] = self._get_single_block_row_attention(
@@ -1019,9 +1029,9 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
                         rnd_r_cnt = 0
                         to_start_block_id = 0
                         if pl_id > 0:
-                            rnd_r_cnt = int(np.sum(plan_num_rand_blocks[:pl_id]))
+                            rnd_r_cnt = int(torch.sum(plan_num_rand_blocks[:pl_id]))
                             to_start_block_id = plan_block_length[pl_id - 1]
-                        curr_r_cnt = int(np.sum(plan_num_rand_blocks[: pl_id + 1]))
+                        curr_r_cnt = int(torch.sum(plan_num_rand_blocks[: pl_id + 1]))
                         for h in range(num_heads):
                             rand_attn[h][blk_rw_idx, rnd_r_cnt:curr_r_cnt] = self._get_single_block_row_attention(
                                 block_id=blk_rw_idx,
@@ -1036,11 +1046,11 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
 
             if plan_num_rand_blocks[plan_idx] == 0:
                 continue
-            curr_r_cnt = int(np.sum(plan_num_rand_blocks[: plan_idx + 1]))
+            curr_r_cnt = int(torch.sum(plan_num_rand_blocks[: plan_idx + 1]))
             from_start_block_id = global_block_top
             to_start_block_id = 0
             if plan_idx > 0:
-                rnd_r_cnt = int(np.sum(plan_num_rand_blocks[:plan_idx]))
+                rnd_r_cnt = int(torch.sum(plan_num_rand_blocks[:plan_idx]))
                 from_start_block_id = plan_block_length[plan_idx - 1]
                 to_start_block_id = plan_block_length[plan_idx - 1]
 
@@ -1090,9 +1100,11 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
             row containing the random attention vector of size num_rand_blocks.
         """
         # list of to_blocks from which to choose random attention
-        to_block_list = np.arange(to_start_block_id, to_end_block_id, dtype=np.int32)
+        to_block_list = torch.arange(to_start_block_id, to_end_block_id, dtype=torch.int32)
+
         # permute the blocks
-        perm_block = np.random.permutation(to_block_list)
+        idx = torch.randperm(to_block_list.shape[0])
+        perm_block = to_block_list[idx].view(to_block_list.size())
 
         # illegal blocks for the current block id, using window
         illegal_blocks = list(range(block_id - window_block_left, block_id + window_block_right + 1))
@@ -1116,7 +1128,7 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
                 selected_random_blokcs.append(perm_block[i])
             if len(selected_random_blokcs) == num_rand_blocks:
                 break
-        return np.array(selected_random_blokcs, dtype=np.int32)
+        return torch.tensor(selected_random_blokcs, dtype=torch.int32)
 
 
 class BigBirdPegasusEncoderAttention(nn.Module):
@@ -1873,6 +1885,9 @@ class BigBirdPegasusEncoder(BigBirdPegasusPreTrainedModel):
         # + sliding tokens: 3 * block_size
         # + random tokens: 2 * num_random_blocks * block_size
         max_tokens_to_attend = (5 + 2 * self.config.num_random_blocks) * self.config.block_size
+
+        print("max_tokens_to_attend", max_tokens_to_attend)
+        print("input_shape", input_shape)
         if self.attention_type == "block_sparse" and input_shape[1] <= max_tokens_to_attend:
             # change attention_type from block_sparse to original_full
             sequence_length = input_shape[1]
@@ -1959,8 +1974,8 @@ class BigBirdPegasusEncoder(BigBirdPegasusPreTrainedModel):
                         to_blocked_mask=blocked_encoder_mask,
                         output_attentions=output_attentions,
                     )
-
                 hidden_states = layer_outputs[0]
+
 
             if output_attentions:
                 all_attentions = all_attentions + (layer_outputs[1],)
@@ -2447,6 +2462,7 @@ class BigBirdPegasusModel(BigBirdPegasusPreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
+
 
         if not return_dict:
             return decoder_outputs + encoder_outputs
