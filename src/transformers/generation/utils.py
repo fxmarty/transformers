@@ -2176,7 +2176,7 @@ class GenerationMixin:
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
             for name, inp in model_inputs.items():
-                print(name, inp.shape)
+                print(name, inp.shape if inp is not None else "NONE")
 
             start = time.time()
             # forward pass to get next token
