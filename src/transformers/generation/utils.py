@@ -2185,7 +2185,7 @@ class GenerationMixin:
                     for n, inp2 in inp.items():
                         print(n, inp2.shape if inp2 is not None else "NONE")
                 else:
-                    print("IN ELSE")
+                    print("IN ELSE", name, type(name))
 
 
             start = time.time()
