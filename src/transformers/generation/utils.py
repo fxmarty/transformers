@@ -2184,8 +2184,13 @@ class GenerationMixin:
                     print("-- generate --", "name is dict:", name)
                     for n, inp2 in inp.items():
                         print("-- generate --", n, inp2.shape if inp2 is not None else "NONE")
+                elif isinstance(inp, bool):
+                    print("-- generate --", name, inp)
+                elif isinstance(inp, tuple):
+                    print("-- generate -- tuple:", name, len(inp))
+                    print("-- generate -- tuple:", name, inp[0][0].shape)
                 else:
-                    print("-- generate --", "ELSE", name, inp)
+                    print("-- generate --", "ELSE", name, type(inp))
 
 
             start = time.time()
