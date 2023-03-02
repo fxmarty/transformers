@@ -2175,6 +2175,10 @@ class GenerationMixin:
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
+            for name, inp in model_inputs.items():
+                print(name, inp.shape)
+
+            start = time.time()
             # forward pass to get next token
             outputs = self(
                 **model_inputs,
@@ -2182,6 +2186,7 @@ class GenerationMixin:
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
             )
+            print(f"self call took: {time.time() - start} s")
 
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need
