@@ -2177,15 +2177,15 @@ class GenerationMixin:
 
             for name, inp in model_inputs.items():
                 if isinstance(inp, torch.Tensor):
-                    print(name, inp.shape)
+                    print("-- generate --", name, inp.shape)
                 elif inp is None:
-                    print(name, "NONE")
+                    print("-- generate --", name, "NONE")
                 elif isinstance(inp, dict):
-                    print("name is dict:", name)
+                    print("-- generate --", "name is dict:", name)
                     for n, inp2 in inp.items():
-                        print(n, inp2.shape if inp2 is not None else "NONE")
+                        print("-- generate --", n, inp2.shape if inp2 is not None else "NONE")
                 else:
-                    print("IN ELSE", name, type(name))
+                    print("-- generate --", "ELSE", name, inp)
 
 
             start = time.time()
@@ -2196,7 +2196,7 @@ class GenerationMixin:
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
             )
-            print(f"self call took: {time.time() - start} s")
+            print("-- generate --", f"------- self call took: {time.time() - start} s")
 
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need
