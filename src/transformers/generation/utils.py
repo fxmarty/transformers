@@ -2176,7 +2176,17 @@ class GenerationMixin:
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
             for name, inp in model_inputs.items():
-                print(name, inp.shape if inp is not None else "NONE")
+                if isinstance(inp, torch.Tensor):
+                    print(name, inp.shape)
+                elif inp is None:
+                    print(name, "NONE")
+                elif isinstance(inp, dict):
+                    print("name is dict:", name)
+                    for n, inp2 in inp.items():
+                        print(n, inp2.shape if inp2 is not None else "NONE")
+                else:
+                    print("IN ELSE")
+
 
             start = time.time()
             # forward pass to get next token
