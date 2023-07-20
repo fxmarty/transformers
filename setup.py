@@ -258,6 +258,7 @@ extras["sklearn"] = deps_list("scikit-learn")
 
 extras["tf"] = deps_list("tensorflow", "onnxconverter-common", "tf2onnx", "tensorflow-text", "keras-nlp")
 extras["tf-cpu"] = deps_list("tensorflow-cpu", "onnxconverter-common", "tf2onnx", "tensorflow-text", "keras-nlp")
+extras["tf-rocm"] = deps_list("tensorflow-rocm", "onnxconverter-common", "tf2onnx", "tensorflow-text", "keras-nlp")
 
 extras["torch"] = deps_list("torch", "accelerate")
 extras["accelerate"] = deps_list("accelerate")
@@ -369,10 +370,8 @@ extras["dev-torch"] = (
     + extras["modelcreation"]
     + extras["onnxruntime"]
 )
-extras["dev-tensorflow"] = (
-    extras["testing"]
-    + extras["tf"]
-    + extras["sentencepiece"]
+
+dev_tensorflow_common = (extras["testing"] + extras["sentencepiece"]
     + extras["tokenizers"]
     + extras["vision"]
     + extras["quality"]
@@ -380,7 +379,14 @@ extras["dev-tensorflow"] = (
     + extras["sklearn"]
     + extras["modelcreation"]
     + extras["onnx"]
-    + extras["tf-speech"]
+    + extras["tf-speech"])
+extras["dev-tensorflow"] = (
+    + extras["tf"]
+    dev_tensorflow_common
+)
+extras["dev-tensorflow-rocm"] = (
+    + extras["tf-rocm"]
+    dev_tensorflow_common
 )
 extras["dev"] = (
     extras["all"]
