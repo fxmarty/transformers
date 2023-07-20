@@ -381,12 +381,12 @@ dev_tensorflow_common = (extras["testing"] + extras["sentencepiece"]
     + extras["onnx"]
     + extras["tf-speech"])
 extras["dev-tensorflow"] = (
-    + extras["tf"]
-    dev_tensorflow_common
+    extras["tf"]
+    + dev_tensorflow_common
 )
 extras["dev-tensorflow-rocm"] = (
-    + extras["tf-rocm"]
-    dev_tensorflow_common
+    extras["tf-rocm"]
+    + dev_tensorflow_common
 )
 extras["dev"] = (
     extras["all"]
