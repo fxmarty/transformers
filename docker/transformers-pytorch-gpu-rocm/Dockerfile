@@ -20,8 +20,8 @@ ARG ROCM='5.2'
 RUN pip install --no-cache-dir torch==1.13.1+rocm5.2 torchvision==0.14.1+rocm5.2 torchaudio==0.13.1 --extra-index-url https://download.pytorch.org/whl/rocm5.2 && \
     pip install --no-cache-dir git+https://github.com/facebookresearch/detectron2.git pytesseract
 
-ARG REF=main
-RUN git clone https://github.com/huggingface/transformers && \
+ARG REF="rocm-ci"
+RUN git clone https://github.com/fxmarty/transformers && \
     cd transformers && \
     git checkout $REF && \
     pip install --no-cache-dir -e .[dev-torch]

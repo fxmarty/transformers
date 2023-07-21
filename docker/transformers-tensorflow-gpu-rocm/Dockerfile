@@ -18,11 +18,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ARG TENSORFLOW='2.12.0.560'
 
-ADD "https://www.random.org/cgi-bin/randbyte?nbytes=10&format=h" skipcache
+
 RUN pip install --no-cache-dir tensorflow-rocm==2.12.0.560
 
-#ARG REF="rocm-ci"
-#RUN git clone https://github.com/fxmarty/transformers && \
-#    cd transformers && \
-#    git checkout $REF && \
-#    pip install --no-cache-dir -e .[dev-tensorflow-rocm]
+ARG REF="rocm-ci"
+RUN git clone https://github.com/fxmarty/transformers && \
+    cd transformers && \
+    git checkout $REF && \
+    pip install --no-cache-dir -e .[dev-tensorflow-rocm]

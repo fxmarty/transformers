@@ -66,6 +66,18 @@ jobs:
             REF=main
           push: true
           tags: huggingface/transformers-all-latest-gpu-push-ci
+      -
+        name: Build and push (for Push CI) in a daily basis
+        # This condition allows `schedule` events, or `push` events that trigger this workflow NOT via `workflow_call`.
+        # The later case is useful for manual image building for debugging purpose. Use another tag in this case!
+        if: inputs.image_postfix != '-push-ci'
+        uses: docker/build-push-action@v3
+        with:
+          context: ./docker/transformers-all-latest-gpu-rocm
+          build-args: |
+            REF=main
+          push: true
+          tags: huggingface/transformers-all-latest-gpu-push-ci-rocm
 
   latest-torch-deepspeed-docker:
     name: "Latest PyTorch + DeepSpeed"
@@ -207,6 +219,15 @@ jobs:
             REF=main
           push: true
           tags: huggingface/transformers-pytorch-gpu
+      -
+        name: Build and push
+        uses: docker/build-push-action@v3
+        with:
+          context: ./docker/transformers-pytorch-gpu-rocm
+          build-args: |
+            REF=main
+          push: true
+          tags: huggingface/transformers-pytorch-gpu-rocm
 
   latest-tensorflow:
     name: "Latest TensorFlow [dev]"
@@ -235,3 +256,12 @@ jobs:
             REF=main
           push: true
           tags: huggingface/transformers-tensorflow-gpu
+      -
+        name: Build and push
+        uses: docker/build-push-action@v3
+        with:
+          context: ./docker/transformers-tensorflow-gpu-rocm
+          build-args: |
+            REF=main
+          push: true
+          tags: huggingface/transformers-tensorflow-gpu-rocm

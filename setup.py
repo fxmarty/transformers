@@ -331,21 +331,22 @@ extras["deepspeed-testing"] = extras["deepspeed"] + extras["testing"] + extras["
 
 extras["quality"] = deps_list("black", "datasets", "isort", "ruff", "GitPython", "hf-doc-builder", "urllib3")
 
-extras["all"] = (
-    extras["tf"]
-    + extras["torch"]
-    + extras["flax"]
-    + extras["sentencepiece"]
-    + extras["tokenizers"]
-    + extras["torch-speech"]
-    + extras["vision"]
-    + extras["integrations"]
-    + extras["timm"]
-    + extras["torch-vision"]
-    + extras["codecarbon"]
-    + extras["accelerate"]
-    + extras["video"]
-)
+for key in [("all", "tf"), ("all-rocm", "tf-rocm")]:
+    extras[key[0]] = (
+        extras[key[1]]
+        + extras["torch"]
+        + extras["flax"]
+        + extras["sentencepiece"]
+        + extras["tokenizers"]
+        + extras["torch-speech"]
+        + extras["vision"]
+        + extras["integrations"]
+        + extras["timm"]
+        + extras["torch-vision"]
+        + extras["codecarbon"]
+        + extras["accelerate"]
+        + extras["video"]
+    )
 
 # Might need to add doc-builder and some specific deps in the future
 extras["docs_specific"] = ["hf-doc-builder"]
@@ -372,32 +373,31 @@ extras["dev-torch"] = (
     + extras["onnxruntime"]
 )
 
-dev_tensorflow_common = (extras["testing"] + extras["sentencepiece"]
-    + extras["tokenizers"]
-    + extras["vision"]
-    + extras["quality"]
-    + extras["docs_specific"]
-    + extras["sklearn"]
-    + extras["modelcreation"]
-    + extras["onnx"]
-    + extras["tf-speech"])
-extras["dev-tensorflow"] = (
-    extras["tf"]
-    + dev_tensorflow_common
-)
-extras["dev-tensorflow-rocm"] = (
-    extras["tf-rocm"]
-    + dev_tensorflow_common
-)
-extras["dev"] = (
-    extras["all"]
-    + extras["testing"]
-    + extras["quality"]
-    + extras["ja"]
-    + extras["docs_specific"]
-    + extras["sklearn"]
-    + extras["modelcreation"]
-)
+for key in [("dev-tensorflow", "tf"), ("dev-tensorflow-rocm", "tf-rocm")]:
+    extras[key[0]] = (
+        extras[key[1]]
+        + extras["testing"]
+        + extras["sentencepiece"]
+        + extras["tokenizers"]
+        + extras["vision"]
+        + extras["quality"]
+        + extras["docs_specific"]
+        + extras["sklearn"]
+        + extras["modelcreation"]
+        + extras["onnx"]
+        + extras["tf-speech"]
+    )
+
+for key in [("dev", "all"), ("dev-rocm", "all-rocm")]:
+    extras[key[0]] = (
+        extras[key[1]]
+        + extras["testing"]
+        + extras["quality"]
+        + extras["ja"]
+        + extras["docs_specific"]
+        + extras["sklearn"]
+        + extras["modelcreation"]
+    )
 
 extras["torchhub"] = deps_list(
     "filelock",
