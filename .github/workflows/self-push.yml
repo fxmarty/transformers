@@ -412,7 +412,7 @@ jobs:
         working-directory: /workspace/transformers
         # TODO: Here we pass all tests in the 2 folders for simplicity. It's better to pass only the identified tests.
         run: |
-          python -m pytest -n 1 --dist=loadfile -v --make-reports=${{ matrix.machine_type }}_tests_torch_cuda_extensions_gpu tests/deepspeed tests/extended
+          python -m pytest -n 1 --dist=loadfile -v --make-reports=${{ matrix.machine_type }}_tests_torch_cuda_extensions_gpu tests/deepspeed_integration tests/extended
 
       - name: Failure short reports
         if: ${{ failure() }}
@@ -502,7 +502,7 @@ jobs:
         working-directory: /workspace/transformers
         # TODO: Here we pass all tests in the 2 folders for simplicity. It's better to pass only the identified tests.
         run: |
-          python -m pytest -n 1 --dist=loadfile -v --make-reports=${{ matrix.machine_type }}_tests_torch_cuda_extensions_gpu tests/deepspeed tests/extended
+          python -m pytest -n 1 --dist=loadfile -v --make-reports=${{ matrix.machine_type }}_tests_torch_cuda_extensions_gpu tests/deepspeed_integration tests/extended
 
       - name: Failure short reports
         if: ${{ failure() }}
