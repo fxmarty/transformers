@@ -352,6 +352,7 @@ class WhisperAttention(nn.Module):
         layer_head_mask: Optional[torch.Tensor] = None,
         output_attentions: bool = False,
         is_prefill: torch.BoolTensor = torch.tensor(False),
+        position_ids: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
         """Input shape: Batch x Time x Channel"""
 
@@ -393,11 +394,14 @@ class WhisperAttention(nn.Module):
             if self.is_decoder:
                 assert past_key_value is not None
                 # self attention, both without past and with past are handled here
-                #print("past_key_value[0] shape", past_key_value[0].shape)
-                #print("key_states", key_states.shape)
-                print("type past_key_value[0] here", type(past_key_value[0]))
-                past_key_value[0][:, :, -1:, :] = key_states
-                past_key_value[1][:, :, -1:, :] = value_states
+                # past_key_value[0][:, :, -1:, :] = key_states
+                # past_key_value[1][:, :, -1:, :] = value_states
+                assert position_ids is not None
+                pos_id = position_ids[0, 0]
+                print("pos_id", pos_id)
+
+                past_key_value[0][:, :, pos_id:pos_id + 1, :] = key_states
+                past_key_value[1][:, :, pos_id:pos_id + 1, :] = value_states
 
                 key_states = past_key_value[0]
                 value_states = past_key_value[1]
@@ -584,6 +588,7 @@ class WhisperDecoderLayer(nn.Module):
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = True,
         is_prefill: torch.BoolTensor = torch.tensor(False),
+        position_ids=None,
     ) -> torch.Tensor:
         """
         Args:
@@ -617,6 +622,7 @@ class WhisperDecoderLayer(nn.Module):
             layer_head_mask=layer_head_mask,
             output_attentions=output_attentions,
             is_prefill=is_prefill,
+            position_ids=position_ids,
         )
         hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
         hidden_states = residual + hidden_states
@@ -630,6 +636,7 @@ class WhisperDecoderLayer(nn.Module):
 
             #print("encoder_attention_mask", encoder_attention_mask.shape)
             #print("encoder_attention_mask", encoder_attention_mask)
+            print("encoder_hidden_states", type(encoder_hidden_states))
             # cross_attn cached key/values tuple is at positions 3,4 of present_key_value tuple
             cross_attn_past_key_value = past_key_value[-2:] if past_key_value is not None else None
             hidden_states, cross_attn_present_key_value = self.encoder_attn(
@@ -1111,7 +1118,6 @@ class WhisperDecoder(WhisperPreTrainedModel):
         )
         use_cache = True
 
-        print("USE CACHE:", use_cache)
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         # retrieve input_ids and inputs_embeds
@@ -1134,7 +1140,7 @@ class WhisperDecoder(WhisperPreTrainedModel):
             inputs_embeds = self.embed_tokens(input_ids)
 
         print("attention_mask", attention_mask)
-        is_prefill = attention_mask[0, 0] == 0
+        is_prefill = attention_mask[0, 1] == 0
         print("is_prefill", is_prefill)
 
         attention_mask = self._prepare_decoder_attention_mask(
@@ -1212,6 +1218,7 @@ class WhisperDecoder(WhisperPreTrainedModel):
                     output_attentions=output_attentions,
                     use_cache=use_cache,
                     is_prefill=is_prefill,
+                    position_ids=position_ids,
                 )
             hidden_states = layer_outputs[0]
 
@@ -1903,7 +1910,7 @@ class WhisperForConditionalGeneration(WhisperPreTrainedModel):
             position_ids = torch.Tensor([[0]]).to(torch.int64)
 
             decoder_attention_mask = torch.zeros(1, max_length, dtype=torch.int64, device=device)
-            decoder_attention_mask[0, -1] = 1  # the token being generated is appened in the last postion
+            decoder_attention_mask[0, 0] = 1
         else:
             # cut decoder_input_ids if past is used
             decoder_input_ids = decoder_input_ids[:, -1:]

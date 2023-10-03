@@ -807,12 +807,12 @@ class GenerationMixin:
             pos_id = model_kwargs["position_ids"][0][0]
             print("pos_id", pos_id)
 
-            model_kwargs["decoder_attention_mask"][:, pos_id] = 1
+            model_kwargs["decoder_attention_mask"][:, pos_id + 1] = 1
 
 
-            for i in range(len(model_kwargs["past_key_values"])):
-                model_kwargs["past_key_values"][i][0][..., pos_id, :] = outputs.past_key_values[i][0][..., -1, :]
-                model_kwargs["past_key_values"][i][1][..., pos_id, :] = outputs.past_key_values[i][1][..., -1, :]
+            # for i in range(len(model_kwargs["past_key_values"])):
+            #    model_kwargs["past_key_values"][i][0][..., pos_id, :] = outputs.past_key_values[i][0][..., -1, :]
+            #    model_kwargs["past_key_values"][i][1][..., pos_id, :] = outputs.past_key_values[i][1][..., -1, :]
 
             # Position ids update: simply add one
             model_kwargs["position_ids"] += 1
