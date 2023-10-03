@@ -784,6 +784,9 @@ class GenerationMixin:
             token_type_ids = model_kwargs["token_type_ids"]
             model_kwargs["token_type_ids"] = torch.cat([token_type_ids, token_type_ids[:, -1].unsqueeze(-1)], dim=-1)
 
+        # Attention mask update: add a one in the position to backfill (corresponding to the token that was just
+        # selected)
+        # backfill_pos = cur_len - 2
         if not is_encoder_decoder:
             # update attention mask
             if "attention_mask" in model_kwargs:
@@ -793,12 +796,28 @@ class GenerationMixin:
                 )
         else:
             # update decoder attention mask
+            """
             if "decoder_attention_mask" in model_kwargs:
                 decoder_attention_mask = model_kwargs["decoder_attention_mask"]
                 model_kwargs["decoder_attention_mask"] = torch.cat(
                     [decoder_attention_mask, decoder_attention_mask.new_ones((decoder_attention_mask.shape[0], 1))],
                     dim=-1,
                 )
+            """
+            pos_id = model_kwargs["position_ids"][0][0]
+            print("pos_id", pos_id)
+
+            model_kwargs["decoder_attention_mask"][:, pos_id] = 1
+
+
+            for i in range(len(model_kwargs["past_key_values"])):
+                model_kwargs["past_key_values"][i][0][..., pos_id, :] = outputs.past_key_values[i][0][..., -1, :]
+                model_kwargs["past_key_values"][i][1][..., pos_id, :] = outputs.past_key_values[i][1][..., -1, :]
+
+            # Position ids update: simply add one
+            model_kwargs["position_ids"] += 1
+
+            print("decoder_attention_mask here", model_kwargs["decoder_attention_mask"])
 
         return model_kwargs
 
@@ -2449,6 +2468,38 @@ class GenerationMixin:
 
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
+            model_kwargs.update(model_inputs)
+            del model_kwargs["decoder_input_ids"]
+
+            from transformers.modeling_outputs import BaseModelOutput
+            print("-----")
+            print("model_inputs keys", model_inputs.keys())
+            print("self", type(self))
+            print("dec attention mask", model_inputs["decoder_attention_mask"])
+            for key, inp in model_inputs.items():
+                if isinstance(inp, torch.Tensor):
+                    print(key, inp.shape)
+                elif isinstance(inp, tuple) or isinstance(inp, list):
+                    for inp_ in inp:
+                        if isinstance(inp_, torch.Tensor):
+                            print("    ", key, inp_.shape)
+                        else:
+                            for inp__ in inp_:
+                                print("    ", key, inp__.shape)
+                elif isinstance(inp, BaseModelOutput):
+                    print(key)
+                    for key_, val_ in inp.items():
+                        if isinstance(val_, torch.Tensor):
+                            print("    ", key_, val_.shape)
+                        elif isinstance(val_, tuple) or isinstance(val_, list):
+                            for inp_ in val_:
+                                if isinstance(inp_, torch.Tensor):
+                                    print("    ", key_, inp_.shape)
+                                else:
+                                    for inp__ in inp_:
+                                        print("    ", key_, inp__.shape)
+                else:
+                    print(key, type(inp))
 
             # forward pass to get next token
             outputs = self(
