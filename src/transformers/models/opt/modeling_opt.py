@@ -114,7 +114,7 @@ class OPTLearnedPositionalEmbedding(nn.Embedding):
         positions = (torch.cumsum(attention_mask, dim=1).type_as(attention_mask) * attention_mask).long() - 1
 
         # cut positions if `past_key_values_length` is > 0
-        positions = positions[:, past_key_values_length:]
+        # positions = positions[:, past_key_values_length:]
 
         return super().forward(positions + self.offset)
 
@@ -160,12 +160,15 @@ class OPTAttention(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         layer_head_mask: Optional[torch.Tensor] = None,
         output_attentions: bool = False,
+        position_ids: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         """Input shape: Batch x Time x Channel"""
 
         # if key_value_states are provided this layer is used as a cross-attention layer
         # for the decoder
         is_cross_attention = key_value_states is not None
+
+        assert not is_cross_attention
 
         bsz, tgt_len, _ = hidden_states.size()
 
@@ -180,16 +183,23 @@ class OPTAttention(nn.Module):
             # cross_attentions
             key_states = self._shape(self.k_proj(key_value_states), -1, bsz)
             value_states = self._shape(self.v_proj(key_value_states), -1, bsz)
-        elif past_key_value is not None:
-            # reuse k, v, self_attention
-            key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
-            value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
-            key_states = torch.cat([past_key_value[0], key_states], dim=2)
-            value_states = torch.cat([past_key_value[1], value_states], dim=2)
         else:
-            # self_attention
+            print("hidden_states", hidden_states.shape)
+            # self-attention
             key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
             value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
+
+            if past_key_value is not None:
+                pos_id = position_ids[0, 0]
+                print("pos_id", pos_id)
+
+                print("past_key_value[0]", past_key_value[0].shape)
+                print("key_states", key_states.shape)
+                past_key_value[0][:, :, pos_id:pos_id + 1, :] = key_states
+                past_key_value[1][:, :, pos_id:pos_id + 1, :] = value_states
+
+                key_states = past_key_value[0]
+                value_states = past_key_value[1]
 
         if self.is_decoder:
             # if cross_attention save Tuple(torch.Tensor, torch.Tensor) of all cross attention key/value_states.
@@ -303,6 +313,7 @@ class OPTDecoderLayer(nn.Module):
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
+        position_ids: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
         Args:
@@ -333,6 +344,7 @@ class OPTDecoderLayer(nn.Module):
             attention_mask=attention_mask,
             layer_head_mask=layer_head_mask,
             output_attentions=output_attentions,
+            position_ids=position_ids,
         )
         hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
         hidden_states = residual + hidden_states
@@ -564,6 +576,7 @@ class OPTDecoder(OPTPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        position_ids: Optional[torch.Tensor] = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         r"""
         Args:
@@ -635,27 +648,36 @@ class OPTDecoder(OPTPreTrainedModel):
             inputs_embeds = self.embed_tokens(input_ids)
 
         batch_size, seq_length = input_shape
-        past_key_values_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
+        # past_key_values_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
+        past_key_values_length = position_ids[0, 0] if past_key_values is not None else 0 
+        
+        # NOTE: useless
         # required mask seq length can be calculated via length of past
-        mask_seq_length = past_key_values_length + seq_length
+        # mask_seq_length = past_key_values_length + seq_length
+
+        print("past_key_values_length", past_key_values_length)
+        print("seq_length", seq_length)
+        print("inputs_embeds here", inputs_embeds.shape)
 
         # embed positions
         if attention_mask is None:
-            attention_mask = torch.ones(batch_size, mask_seq_length, device=inputs_embeds.device)
-        elif attention_mask.shape[1] != mask_seq_length:
-            raise ValueError(
-                f"The provided attention mask has length {attention_mask.shape[1]}, but its length should be "
-                f"{mask_seq_length} (sum of the lengths of current and past inputs)"
-            )
+            raise ValueError("attention_mask should not be none")
+        elif attention_mask.shape[1] != 128:  # TODO: remove the hard-coded 128
+            raise ValueError(f"The provided attention mask has length {attention_mask.shape[1]}, but should be 128")
+        
         causal_attention_mask = self._prepare_decoder_attention_mask(
             attention_mask, input_shape, inputs_embeds, past_key_values_length
         )
         pos_embeds = self.embed_positions(attention_mask, past_key_values_length)
 
+        print("pos_embeds", pos_embeds.shape)
+
         if self.project_in is not None:
             inputs_embeds = self.project_in(inputs_embeds)
 
         hidden_states = inputs_embeds + pos_embeds
+
+        print("hidden_states here", hidden_states.shape)
 
         if self.gradient_checkpointing and self.training:
             if use_cache:
@@ -714,6 +736,7 @@ class OPTDecoder(OPTPreTrainedModel):
                     past_key_value=past_key_value,
                     output_attentions=output_attentions,
                     use_cache=use_cache,
+                    position_ids=position_ids
                 )
 
             hidden_states = layer_outputs[0]
@@ -783,6 +806,7 @@ class OPTModel(OPTPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        position_ids: Optional[torch.Tensor] = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -802,6 +826,7 @@ class OPTModel(OPTPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            position_ids=position_ids,
         )
 
         if not return_dict:
@@ -859,6 +884,7 @@ class OPTForCausalLM(OPTPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        position_ids: Optional[torch.Tensor] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -951,6 +977,7 @@ class OPTForCausalLM(OPTPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            position_ids=position_ids,
         )
 
         logits = self.lm_head(outputs[0]).contiguous()
@@ -981,8 +1008,18 @@ class OPTForCausalLM(OPTPreTrainedModel):
     def prepare_inputs_for_generation(
         self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
     ):
+
+        position_ids = kwargs.get("position_ids", None)
+        print("position_ids beginning prepare", position_ids)
+        if attention_mask is not None and position_ids is None:
+            # create position_ids on the fly for batch generation
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 1)
+
         if past_key_values:
+            position_ids = position_ids[:, -1].unsqueeze(-1)
             input_ids = input_ids[:, -1:]
+        print("position_ids end prepare", position_ids)
 
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
         if inputs_embeds is not None and past_key_values is None:
@@ -995,6 +1032,7 @@ class OPTForCausalLM(OPTPreTrainedModel):
                 "past_key_values": past_key_values,
                 "use_cache": kwargs.get("use_cache"),
                 "attention_mask": attention_mask,
+                "position_ids": position_ids,
             }
         )
         return model_inputs

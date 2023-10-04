@@ -789,11 +789,11 @@ class GenerationMixin:
         # backfill_pos = cur_len - 2
         if not is_encoder_decoder:
             # update attention mask
-            if "attention_mask" in model_kwargs:
-                attention_mask = model_kwargs["attention_mask"]
-                model_kwargs["attention_mask"] = torch.cat(
-                    [attention_mask, attention_mask.new_ones((attention_mask.shape[0], 1))], dim=-1
-                )
+            pos_id = model_kwargs["position_ids"][0][0]
+            print("pos_id", pos_id)
+
+            model_kwargs["attention_mask"][:, pos_id + 1] = 1
+            model_kwargs["position_ids"] += 1
         else:
             # update decoder attention mask
             """
@@ -2469,13 +2469,19 @@ class GenerationMixin:
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
             model_kwargs.update(model_inputs)
-            del model_kwargs["decoder_input_ids"]
+
+            # just a hack to avoid TypeError: prepare_inputs_for_generation() got multiple values for argument ...
+            if self.config.is_encoder_decoder:
+                del model_kwargs["decoder_input_ids"]
+            else:
+                del model_kwargs["input_ids"]
 
             from transformers.modeling_outputs import BaseModelOutput
             print("-----")
             print("model_inputs keys", model_inputs.keys())
             print("self", type(self))
-            print("dec attention mask", model_inputs["decoder_attention_mask"])
+            print("passed attention mask", model_inputs["attention_mask"])
+            # print("dec attention mask", model_inputs["decoder_attention_mask"])
             for key, inp in model_inputs.items():
                 if isinstance(inp, torch.Tensor):
                     print(key, inp.shape)
