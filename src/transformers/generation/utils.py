@@ -789,10 +789,11 @@ class GenerationMixin:
         # backfill_pos = cur_len - 2
         if not is_encoder_decoder:
             # update attention mask
-            pos_id = model_kwargs["position_ids"][0][0]
+            pos_id = model_kwargs["position_ids"][0][-1]
             print("pos_id", pos_id)
 
-            model_kwargs["attention_mask"][:, pos_id + 1] = 1
+            # NOTE: this assumes left padding!!
+            model_kwargs["attention_mask"][:, - pos_id] = 1
             model_kwargs["position_ids"] += 1
         else:
             # update decoder attention mask

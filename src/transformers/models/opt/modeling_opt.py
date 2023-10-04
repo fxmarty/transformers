@@ -106,17 +106,17 @@ class OPTLearnedPositionalEmbedding(nn.Embedding):
         self.offset = 2
         super().__init__(num_embeddings + self.offset, embedding_dim)
 
-    def forward(self, attention_mask: torch.LongTensor, past_key_values_length: int = 0):
+    def forward(self, position_ids):
         """`input_ids_shape` is expected to be [bsz x seqlen]."""
-        attention_mask = attention_mask.long()
+        # attention_mask = attention_mask.long()
 
         # create positions depending on attention_mask
-        positions = (torch.cumsum(attention_mask, dim=1).type_as(attention_mask) * attention_mask).long() - 1
+        # positions = (torch.cumsum(attention_mask, dim=1).type_as(attention_mask) * attention_mask).long() - 1
 
         # cut positions if `past_key_values_length` is > 0
         # positions = positions[:, past_key_values_length:]
 
-        return super().forward(positions + self.offset)
+        return super().forward(position_ids)
 
 
 class OPTAttention(nn.Module):
@@ -195,8 +195,8 @@ class OPTAttention(nn.Module):
 
                 print("past_key_value[0]", past_key_value[0].shape)
                 print("key_states", key_states.shape)
-                past_key_value[0][:, :, pos_id:pos_id + 1, :] = key_states
-                past_key_value[1][:, :, pos_id:pos_id + 1, :] = value_states
+                past_key_value[0][:, :, - pos_id:-pos_id + 1, :] = key_states
+                past_key_value[1][:, :, - pos_id:-pos_id + 1, :] = value_states
 
                 key_states = past_key_value[0]
                 value_states = past_key_value[1]
@@ -656,8 +656,6 @@ class OPTDecoder(OPTPreTrainedModel):
         # mask_seq_length = past_key_values_length + seq_length
 
         print("past_key_values_length", past_key_values_length)
-        print("seq_length", seq_length)
-        print("inputs_embeds here", inputs_embeds.shape)
 
         # embed positions
         if attention_mask is None:
@@ -668,16 +666,12 @@ class OPTDecoder(OPTPreTrainedModel):
         causal_attention_mask = self._prepare_decoder_attention_mask(
             attention_mask, input_shape, inputs_embeds, past_key_values_length
         )
-        pos_embeds = self.embed_positions(attention_mask, past_key_values_length)
-
-        print("pos_embeds", pos_embeds.shape)
+        pos_embeds = self.embed_positions(position_ids)
 
         if self.project_in is not None:
             inputs_embeds = self.project_in(inputs_embeds)
 
         hidden_states = inputs_embeds + pos_embeds
-
-        print("hidden_states here", hidden_states.shape)
 
         if self.gradient_checkpointing and self.training:
             if use_cache:
@@ -1013,8 +1007,9 @@ class OPTForCausalLM(OPTPreTrainedModel):
         print("position_ids beginning prepare", position_ids)
         if attention_mask is not None and position_ids is None:
             # create position_ids on the fly for batch generation
-            position_ids = attention_mask.long().cumsum(-1) - 1
-            position_ids.masked_fill_(attention_mask == 0, 1)
+            # NOTE: see OPT embedding for that
+            position_ids = (attention_mask.long().cumsum(-1) * attention_mask) - 1
+            position_ids = position_ids + 2
 
         if past_key_values:
             position_ids = position_ids[:, -1].unsqueeze(-1)
