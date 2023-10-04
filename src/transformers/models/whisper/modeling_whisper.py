@@ -1140,7 +1140,7 @@ class WhisperDecoder(WhisperPreTrainedModel):
             inputs_embeds = self.embed_tokens(input_ids)
 
         print("attention_mask", attention_mask)
-        is_prefill = attention_mask[0, 1] == 0
+        is_prefill = attention_mask[0, 1] == 0  # TODO: just use the position ids here :)
         print("is_prefill", is_prefill)
 
         attention_mask = self._prepare_decoder_attention_mask(

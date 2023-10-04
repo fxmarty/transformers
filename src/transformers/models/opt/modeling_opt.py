@@ -116,8 +116,6 @@ class OPTLearnedPositionalEmbedding(nn.Embedding):
         # cut positions if `past_key_values_length` is > 0
         # positions = positions[:, past_key_values_length:]
 
-        #print("pos passed to embedding", position_ids)
-
         return super().forward(position_ids)
 
 
@@ -186,19 +184,16 @@ class OPTAttention(nn.Module):
             key_states = self._shape(self.k_proj(key_value_states), -1, bsz)
             value_states = self._shape(self.v_proj(key_value_states), -1, bsz)
         else:
-            #print("hidden_states", hidden_states.shape)
             # self-attention
             key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
             value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
 
             if past_key_value is not None:
                 pos_id = position_ids[0, 0]
-                #print("pos_id", pos_id)
-
-                #print("past_key_value[0]", past_key_value[0].shape)
-                #print("key_states", key_states.shape)
-                past_key_value[0][:, :, - pos_id:-pos_id + 1, :] = key_states
-                past_key_value[1][:, :, - pos_id:-pos_id + 1, :] = value_states
+                
+                idx = - (pos_id - 1)  # it is pos_id - 1 because of the self.offset (see OPT embedding)
+                past_key_value[0][:, :, idx:idx + 1, :] = key_states
+                past_key_value[1][:, :, idx:idx + 1, :] = value_states
 
                 key_states = past_key_value[0]
                 value_states = past_key_value[1]
@@ -275,9 +270,6 @@ class OPTAttention(nn.Module):
 
         attn_output = attn_output.view(bsz, self.num_heads, tgt_len, self.head_dim)
         attn_output = attn_output.transpose(1, 2)
-
-        print("attn_output", attn_output.shape)
-        print("attn_output", attn_output)
 
         # Use the `embed_dim` from the config (stored in the class) rather than `hidden_state` because `attn_output` can be
         # partitioned aross GPUs when using tensor-parallelism.
@@ -661,8 +653,6 @@ class OPTDecoder(OPTPreTrainedModel):
         # required mask seq length can be calculated via length of past
         # mask_seq_length = past_key_values_length + seq_length
 
-        #print("past_key_values_length", past_key_values_length)
-
         # embed positions
         if attention_mask is None:
             raise ValueError("attention_mask should not be none")
@@ -672,7 +662,6 @@ class OPTDecoder(OPTPreTrainedModel):
         causal_attention_mask = self._prepare_decoder_attention_mask(
             attention_mask, input_shape, inputs_embeds, past_key_values_length
         )
-        print("causal_attention_mask", causal_attention_mask)
         pos_embeds = self.embed_positions(position_ids)
 
         if self.project_in is not None:
@@ -1011,7 +1000,6 @@ class OPTForCausalLM(OPTPreTrainedModel):
     ):
 
         position_ids = kwargs.get("position_ids", None)
-        #print("position_ids beginning prepare", position_ids)
         if attention_mask is not None and position_ids is None:
             # create position_ids on the fly for batch generation
             # NOTE: see OPT embedding for that
@@ -1021,7 +1009,6 @@ class OPTForCausalLM(OPTPreTrainedModel):
         if past_key_values:
             position_ids = position_ids[:, -1].unsqueeze(-1)
             input_ids = input_ids[:, -1:]
-        #print("position_ids end prepare", position_ids)
 
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
         if inputs_embeds is not None and past_key_values is None:

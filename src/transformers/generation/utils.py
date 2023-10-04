@@ -790,7 +790,6 @@ class GenerationMixin:
         if not is_encoder_decoder:
             # update attention mask
             pos_id = model_kwargs["position_ids"][0][-1]
-            #print("pos_id", pos_id)
 
             # NOTE: this assumes left padding!!
             model_kwargs["attention_mask"][:, - pos_id] = 1
@@ -806,19 +805,11 @@ class GenerationMixin:
                 )
             """
             pos_id = model_kwargs["position_ids"][0][0]
-            #print("pos_id", pos_id)
 
             model_kwargs["decoder_attention_mask"][:, pos_id + 1] = 1
 
-
-            # for i in range(len(model_kwargs["past_key_values"])):
-            #    model_kwargs["past_key_values"][i][0][..., pos_id, :] = outputs.past_key_values[i][0][..., -1, :]
-            #    model_kwargs["past_key_values"][i][1][..., pos_id, :] = outputs.past_key_values[i][1][..., -1, :]
-
             # Position ids update: simply add one
             model_kwargs["position_ids"] += 1
-
-            #print("decoder_attention_mask here", model_kwargs["decoder_attention_mask"])
 
         return model_kwargs
 
@@ -2476,39 +2467,6 @@ class GenerationMixin:
                 del model_kwargs["decoder_input_ids"]
             else:
                 del model_kwargs["input_ids"]
-
-            """
-            from transformers.modeling_outputs import BaseModelOutput
-            print("-----")
-            print("model_inputs keys", model_inputs.keys())
-            print("self", type(self))
-            print("passed attention mask", model_inputs["attention_mask"])
-            # print("dec attention mask", model_inputs["decoder_attention_mask"])
-            for key, inp in model_inputs.items():
-                if isinstance(inp, torch.Tensor):
-                    print(key, inp.shape)
-                elif isinstance(inp, tuple) or isinstance(inp, list):
-                    for inp_ in inp:
-                        if isinstance(inp_, torch.Tensor):
-                            print("    ", key, inp_.shape)
-                        else:
-                            for inp__ in inp_:
-                                print("    ", key, inp__.shape)
-                elif isinstance(inp, BaseModelOutput):
-                    print(key)
-                    for key_, val_ in inp.items():
-                        if isinstance(val_, torch.Tensor):
-                            print("    ", key_, val_.shape)
-                        elif isinstance(val_, tuple) or isinstance(val_, list):
-                            for inp_ in val_:
-                                if isinstance(inp_, torch.Tensor):
-                                    print("    ", key_, inp_.shape)
-                                else:
-                                    for inp__ in inp_:
-                                        print("    ", key_, inp__.shape)
-                else:
-                    print(key, type(inp))
-            """
 
             # forward pass to get next token
             outputs = self(
