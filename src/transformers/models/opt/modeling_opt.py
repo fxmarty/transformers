@@ -116,6 +116,8 @@ class OPTLearnedPositionalEmbedding(nn.Embedding):
         # cut positions if `past_key_values_length` is > 0
         # positions = positions[:, past_key_values_length:]
 
+        print("pos passed to embedding", position_ids)
+
         return super().forward(position_ids)
 
 
@@ -273,6 +275,8 @@ class OPTAttention(nn.Module):
 
         attn_output = attn_output.view(bsz, self.num_heads, tgt_len, self.head_dim)
         attn_output = attn_output.transpose(1, 2)
+
+        #print("attn_output", attn_output)
 
         # Use the `embed_dim` from the config (stored in the class) rather than `hidden_state` because `attn_output` can be
         # partitioned aross GPUs when using tensor-parallelism.
@@ -649,7 +653,8 @@ class OPTDecoder(OPTPreTrainedModel):
 
         batch_size, seq_length = input_shape
         # past_key_values_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
-        past_key_values_length = position_ids[0, 0] if past_key_values is not None else 0 
+        # NOTE: - 2 here because of the self.offset = 2 in OPT embedding (for some reason)
+        past_key_values_length = position_ids[0, 0] - 2 if past_key_values is not None else 0 
         
         # NOTE: useless
         # required mask seq length can be calculated via length of past
