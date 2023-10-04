@@ -790,7 +790,7 @@ class GenerationMixin:
         if not is_encoder_decoder:
             # update attention mask
             pos_id = model_kwargs["position_ids"][0][-1]
-            print("pos_id", pos_id)
+            #print("pos_id", pos_id)
 
             # NOTE: this assumes left padding!!
             model_kwargs["attention_mask"][:, - pos_id] = 1
@@ -806,7 +806,7 @@ class GenerationMixin:
                 )
             """
             pos_id = model_kwargs["position_ids"][0][0]
-            print("pos_id", pos_id)
+            #print("pos_id", pos_id)
 
             model_kwargs["decoder_attention_mask"][:, pos_id + 1] = 1
 
@@ -818,7 +818,7 @@ class GenerationMixin:
             # Position ids update: simply add one
             model_kwargs["position_ids"] += 1
 
-            print("decoder_attention_mask here", model_kwargs["decoder_attention_mask"])
+            #print("decoder_attention_mask here", model_kwargs["decoder_attention_mask"])
 
         return model_kwargs
 
@@ -2477,6 +2477,7 @@ class GenerationMixin:
             else:
                 del model_kwargs["input_ids"]
 
+            """
             from transformers.modeling_outputs import BaseModelOutput
             print("-----")
             print("model_inputs keys", model_inputs.keys())
@@ -2507,6 +2508,7 @@ class GenerationMixin:
                                         print("    ", key_, inp__.shape)
                 else:
                     print(key, type(inp))
+            """
 
             # forward pass to get next token
             outputs = self(
