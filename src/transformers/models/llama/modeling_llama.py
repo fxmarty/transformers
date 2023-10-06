@@ -97,17 +97,56 @@ def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] 
     return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
 
 
-def _inplace_unmask_padding(expanded_mask, attention_mask):
+def _inplace_unmask_padding(expanded_mask: torch.Tensor, attention_mask: torch.Tensor):
+    """
+    Attend to all padding tokens as required by F.scaled_dot_product_attention memory-efficient attention path.
+    Details: https://github.com/pytorch/pytorch/issues/110213
+
+    If attention_mask is
+
+    [[1, 1, 1]
+     [0, 0, 1]
+     [0, 1, 1]]
+
+    and expanded_mask is
+
+    [[[[1, 1, 1],
+       [1, 1, 1],
+       [1, 1, 1]]],
+
+    [[[0, 0, 1],
+      [0, 0, 1],
+      [0, 0, 1]]],
+
+    [[[0, 1, 1],
+      [0, 1, 1],
+      [0, 1, 1]]]]
+
+    then the modified expanded_mask will be
+
+    [[[[1, 1, 1],
+       [1, 1, 1],
+       [1, 1, 1]]],
+
+    [[[1, 1, 1],
+      [1, 1, 1],
+      [0, 0, 1]]],
+
+    [[[1, 1, 1],
+      [0, 1, 1],
+      [0, 1, 1]]]]
+    """
     bsz = attention_mask.shape[0]
 
     # Get the index of the first non-zero value for every sample in the batch.
+    # In the above example, indices = [[0], [2], [1]]]
     tmp = torch.arange(attention_mask.shape[1], 0, -1)
     indices = torch.argmax(attention_mask.cpu() * tmp, 1, keepdim=True)
 
     max_len = torch.max(indices)
     range_tensor = torch.arange(max_len).unsqueeze(0)
     range_tensor = range_tensor.repeat(indices.size(0), 1)
-    range_tensor[range_tensor >= indices] = 0
+    range_tensor[range_tensor >= indices] = 0  # Avoid unmasking pad tokens at relevant target positions (on axis -2).
 
     expanded_mask[torch.arange(bsz).unsqueeze(1), 0, range_tensor] = 0
 
