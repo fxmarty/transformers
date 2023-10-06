@@ -661,6 +661,8 @@ class LlamaSDPAAttention(LlamaAttention):
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
+        batch_size = query_states.shape[0]
+        query_length = query_states.shape[-2]
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
             kv_seq_len += past_key_value[0].shape[-2]
@@ -677,32 +679,36 @@ class LlamaSDPAAttention(LlamaAttention):
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
-        # Note that Llama does not use dropout in the attention, hence the hard-coded
+        # NOTE: Llama does not use dropout in the attention, hence the hard-coded
         # dropout_p=0.0 independent of self.training.
         # The batch_size = 1 case is handled separately to allow to dispatch on flash attention
         # kernel.
-        if bsz == 1:
-            if query_states.shape[2] > 1:
-                is_causal = True
-            else:
+        # NOTE: As of PyTorch 2.1, SDPA can not dispatch to flash attention v2 in case an
+        # attention mask passed. Possible solution: use nested tensors.
+
+        # Below, we ignore the attention mask in some cases to allow the dispatch to flash attention.
+        if batch_size == 1 and padding_mask is None:
+            if query_length == 1:
                 is_causal = False
-            attn_output = torch.nn.functional.scaled_dot_product_attention(
-                query_states, key_states, value_states, attn_mask=None, dropout_p=0.0, is_causal=is_causal
-            )
+                attn_mask = None
+            elif kv_seq_len == query_length:
+                is_causal = True
+                attn_mask = None
+            else:
+                # Unfortunately, for query_length > 1, we can not generally ignore the attention mask, as SDPA causal mask generation
+                # may be wrong. Reference: https://github.com/pytorch/pytorch/issues/108108
+                attn_mask = torch.max(attention_mask, torch.tensor(torch.finfo(key_states.dtype).min))
+                is_causal = False
+        elif attention_mask is not None:
+            attn_mask = torch.max(attention_mask, torch.tensor(torch.finfo(key_states.dtype).min))
+            is_causal = False
         else:
-            if attention_mask is not None:
-                if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
-                    raise ValueError(
-                        f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
-                    )
+            attn_mask = None
+            is_causal = True
 
-            attention_mask = torch.max(attention_mask, torch.tensor(torch.finfo(key_states.dtype).min))
-
-            # NOTE: As of PyTorch 2.1, this case can not dispatch to flash attention v2 due to the
-            # attention mask passed. Possible solution: use nested tensors.
-            attn_output = torch.nn.functional.scaled_dot_product_attention(
-                query_states, key_states, value_states, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
-            )
+        attn_output = torch.nn.functional.scaled_dot_product_attention(
+            query_states, key_states, value_states, attn_mask=attn_mask, dropout_p=0.0, is_causal=is_causal
+        )
 
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
