@@ -735,7 +735,8 @@ class LlamaSDPAAttention(LlamaAttention):
                 attention_mask = None
             else:
                 # Unfortunately, for query_length > 1, we can not generally ignore the attention mask, as SDPA causal mask generation
-                # may be wrong. Reference: https://github.com/pytorch/pytorch/issues/108108
+                # may be wrong. We set is_causal=False in SDPA and rely on Transformers attention_mask instead.
+                # Reference: https://github.com/pytorch/pytorch/issues/108108
                 is_causal = False
         elif attention_mask is not None:
             is_causal = False
