@@ -1426,7 +1426,7 @@ class WhisperForConditionalGeneration(WhisperPreTrainedModel):
         """
         self.model.encoder._freeze_parameters()
 
-    def get_empty_kv_cache(self, encoder_seqlen: int, max_length: int, dtype: torch.dtype, device: torch.device):
+    def get_empty_kv_cache(self, max_length: int, dtype: torch.dtype, device: torch.device):
         """
         Creates fake KV cache for self-attention and cross-attention for the first decoder pass.
         """
@@ -1454,7 +1454,7 @@ class WhisperForConditionalGeneration(WhisperPreTrainedModel):
                 torch.zeros(
                     1,  # batch size
                     config.decoder_attention_heads,
-                    encoder_seqlen,  # equal to preprocessor_config.nb_max_frames // 2
+                    config.max_source_positions,
                     config.d_model // config.decoder_attention_heads,
                     dtype=dtype,
                     device=device
@@ -1462,7 +1462,7 @@ class WhisperForConditionalGeneration(WhisperPreTrainedModel):
                 torch.zeros(
                     1,  # batch size
                     config.decoder_attention_heads,
-                    encoder_seqlen,  # equal to preprocessor_config.nb_max_frames // 2
+                    config.max_source_positions,
                     config.d_model // config.decoder_attention_heads,
                     dtype=dtype,
                     device=device
@@ -1535,7 +1535,6 @@ class WhisperForConditionalGeneration(WhisperPreTrainedModel):
         ' Mr. Quilter is the apostle of the middle classes, and we are glad to welcome his gospel.'
         ```"""
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-        # return_dict = False
 
         if labels is not None:
             if decoder_input_ids is None and decoder_inputs_embeds is None:
@@ -1858,10 +1857,10 @@ class WhisperForConditionalGeneration(WhisperPreTrainedModel):
         assert use_cache
 
         if past_key_values is None:
-            # TODO fix hard-coded values
+            # TODO fix hard-coded value
             max_length = 50
             device = "cpu"
-            past_key_values = self.get_empty_kv_cache(encoder_seqlen=1500, max_length=max_length, dtype=torch.float32, device=device)
+            past_key_values = self.get_empty_kv_cache(max_length=max_length, dtype=torch.float32, device=device)
 
             position_ids = torch.Tensor([[0]]).to(torch.int64)
 
