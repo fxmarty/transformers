@@ -729,24 +729,21 @@ class LlamaSDPAAttention(LlamaAttention):
         if batch_size == 1 and padding_mask is None:
             if query_length == 1:
                 is_causal = False
-                attn_mask = None
+                attention_mask = None
             elif kv_seq_len == query_length:
                 is_causal = True
-                attn_mask = None
+                attention_mask = None
             else:
                 # Unfortunately, for query_length > 1, we can not generally ignore the attention mask, as SDPA causal mask generation
                 # may be wrong. Reference: https://github.com/pytorch/pytorch/issues/108108
-                attn_mask = torch.max(attention_mask, torch.tensor(torch.finfo(key_states.dtype).min))
                 is_causal = False
         elif attention_mask is not None:
-            attn_mask = torch.max(attention_mask, torch.tensor(torch.finfo(key_states.dtype).min))
             is_causal = False
         else:
-            attn_mask = None
             is_causal = True
 
         attn_output = torch.nn.functional.scaled_dot_product_attention(
-            query_states, key_states, value_states, attn_mask=attn_mask, dropout_p=0.0, is_causal=is_causal
+            query_states, key_states, value_states, attn_mask=attention_mask, dropout_p=0.0, is_causal=is_causal
         )
 
         attn_output = attn_output.transpose(1, 2).contiguous()
