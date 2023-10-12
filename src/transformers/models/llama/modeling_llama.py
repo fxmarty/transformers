@@ -663,8 +663,7 @@ class LlamaSDPAAttention(LlamaAttention):
     SDPA API.
     """
 
-    @staticmethod
-    def set_sdpa_attention_mask(batch_size: int, attention_mask: Optional[torch.Tensor], padding_mask: Optional[torch.Tensor], kv_seq_len: int, query_length: int):
+    def set_sdpa_attention_mask(self, batch_size: int, attention_mask: Optional[torch.Tensor], padding_mask: Optional[torch.Tensor], kv_seq_len: int, query_length: int):
         """
         Prepares the correct argument to be used by torch.nn.functional.scaled_dot_product_attention.
 
@@ -704,9 +703,8 @@ class LlamaSDPAAttention(LlamaAttention):
         padding_mask: Optional[torch.LongTensor] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         if output_attentions:
-            raise ValueError("output_attentions=True can not be supported with PyTorch SDPA.")
-        attn_weights = None
-
+            # NOTE: output_attentions=True can not be supported when using SDPA.
+            super().forward(hidden_states=hidden_states, attention_mask=attention_mask, position_ids=position_ids, past_key_value=past_key_value, output_attentions=output_attentions, use_cache=use_cache, padding_mask=padding_mask)
         bsz, q_len, _ = hidden_states.size()
 
         if self.config.pretraining_tp > 1:
@@ -759,7 +757,7 @@ class LlamaSDPAAttention(LlamaAttention):
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
         # NOTE: Llama does not use dropout in the attention, hence the hard-coded dropout_p=0.0 independent of self.training.
-        attention_mask, is_causal = LlamaSDPAAttention.set_sdpa_attention_mask(batch_size, attention_mask, padding_mask, kv_seq_len, query_length)
+        attention_mask, is_causal = self.set_sdpa_attention_mask(batch_size, attention_mask, padding_mask, kv_seq_len, query_length)
 
         attn_output = torch.nn.functional.scaled_dot_product_attention(
             query_states, key_states, value_states, attn_mask=attention_mask, dropout_p=0.0, is_causal=is_causal
@@ -775,7 +773,7 @@ class LlamaSDPAAttention(LlamaAttention):
         else:
             attn_output = self.o_proj(attn_output)
 
-        return attn_output, attn_weights, past_key_value
+        return attn_output, None, past_key_value
 
 
 class LlamaDecoderLayer(nn.Module):
@@ -1015,7 +1013,7 @@ class LlamaModel(LlamaPreTrainedModel):
             )
 
             # From PyTorch 2.1 onwards, F.scaled_dot_product_attention with the memory-efficient attention backend
-            # does not support completely unattended sequences in the attention mask. Details: https://github.com/huggingface/transformers/pull/26572
+            # produces nans if sequences are completely unattended in the attention mask. Details: https://github.com/pytorch/pytorch/issues/110213
             if input_shape[-1] > 1 and is_torch_sdpa_available() and attention_mask.device.type == "cuda":
                 combined_attention_mask = _unmask_unattended(combined_attention_mask, attention_mask)
 
