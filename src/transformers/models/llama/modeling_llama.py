@@ -97,58 +97,85 @@ def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] 
     return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
 
 
-def _inplace_unmask_padding(expanded_mask: torch.Tensor, attention_mask: torch.Tensor):
+def _inplace_unmask_unattended(expanded_mask: torch.Tensor, attention_mask: torch.Tensor):
     """
-    Attend to all padding tokens as required by F.scaled_dot_product_attention memory-efficient attention path.
+    Attend to all tokens in masked rows from the expanded attention mask, for example the relevant first rows when using left padding.
+    This is required by F.scaled_dot_product_attention memory-efficient attention path.
     Details: https://github.com/pytorch/pytorch/issues/110213
+
+    expanded_mask is [bsz, 1, tgt_seq_len, src_seq_len], attention_mask is [bsz, src_seq_len].
 
     If attention_mask is
 
-    [[1, 1, 1]
-     [0, 0, 1]
+    [[0, 0, 1]
+     [1, 1, 1]
      [0, 1, 1]]
 
-    and expanded_mask is
+    and expanded_mask is (e.g. here left-padding case)
 
-    [[[[1, 1, 1],
-       [1, 1, 1],
-       [1, 1, 1]]],
+    [[[[0, 0, 0],
+       [0, 0, 0],
+       [0, 0, 1]]],
 
-    [[[0, 0, 1],
-      [0, 0, 1],
-      [0, 0, 1]]],
+    [[[1, 0, 0],
+      [1, 1, 0],
+      [1, 1, 1]]],
 
-    [[[0, 1, 1],
-      [0, 1, 1],
+    [[[0, 0, 0],
+      [0, 1, 0],
       [0, 1, 1]]]]
 
     then the modified expanded_mask will be
 
-    [[[[1, 1, 1],
-       [1, 1, 1],
-       [1, 1, 1]]],
+    [[[[1, 1, 1],    <-- modified
+       [1, 1, 1],    <-- modified
+       [0, 0, 1]]],
 
-    [[[1, 1, 1],
-      [1, 1, 1],
-      [0, 0, 1]]],
+    [[[1, 0, 0],
+      [1, 1, 0],
+      [1, 1, 1]]],
 
-    [[[1, 1, 1],
-      [0, 1, 1],
+    [[[1, 1, 1],    <-- modified
+      [0, 1, 0],
       [0, 1, 1]]]]
     """
     bsz = attention_mask.shape[0]
 
+
+    #masked_rows = torch.where(~torch.all(attention_mask, dim=1))[0]
+    #attention_mask_masked = attention_mask[masked_rows]
+
     # Get the index of the first non-zero value for every sample in the batch.
-    # In the above example, indices = [[0], [2], [1]]]
+    # In the above example, indices = [[2], [0], [1]]]
     tmp = torch.arange(attention_mask.shape[1], 0, -1)
     indices = torch.argmax(attention_mask.cpu() * tmp, 1, keepdim=True)
 
+    # Find the batch indexes that have unattended tokens on the leftmost side (e.g. [0, 0, 1, 1, 1]), for which the first rows of the
+    # expanded mask will be completely unattended.
+    left_masked_rows = torch.where(indices > 0)[0]
+    
+    print("left_masked_rows", left_masked_rows.shape)
+    if left_masked_rows.shape[0] == 0:
+        return
+    indices = indices[left_masked_rows]
+
+    #print("indices", indices)
     max_len = torch.max(indices)
     range_tensor = torch.arange(max_len).unsqueeze(0)
     range_tensor = range_tensor.repeat(indices.size(0), 1)
-    range_tensor[range_tensor >= indices] = 0  # Avoid unmasking pad tokens at relevant target positions (on axis -2).
 
-    expanded_mask[torch.arange(bsz).unsqueeze(1), 0, range_tensor] = 0
+    #print("range_tensor[range_tensor >= indices]", range_tensor[range_tensor >= indices].shape)
+    #print("range_tensor[range_tensor >= indices]", range_tensor[range_tensor >= indices])
+    print("indices", indices)
+    print("range_tensor bef", range_tensor)
+    range_tensor[range_tensor >= indices] = 0 # Avoid unmasking tokens at relevant target positions (on the row axis), by rather unmasking possibly several times the first row that should always be unmasked as we filtered out the batch above.
+
+    print("range_tensor", range_tensor)
+    print("expanded_mask", expanded_mask)
+
+    expanded_mask[left_masked_rows.unsqueeze(1), 0, range_tensor] = 0
+
+    print("expanded_mask aft", expanded_mask)
 
 
 class LlamaRMSNorm(nn.Module):
@@ -994,12 +1021,21 @@ class LlamaModel(LlamaPreTrainedModel):
 
             # From PyTorch 2.1 onwards, F.scaled_dot_product_attention with the memory-efficient attention backend
             # does not support unattended sequences in the attention mask. Details: https://github.com/huggingface/transformers/pull/26572
-            if input_shape[-1] > 1 and is_torch_sdpa_available() and attention_mask.device.type == "cuda":
-                _inplace_unmask_padding(expanded_attn_mask, attention_mask)
+            # if input_shape[-1] > 1 and is_torch_sdpa_available() and attention_mask.device.type == "cuda":
+            #     _inplace_unmask_padding(expanded_attn_mask, attention_mask)
 
+            print("expanded_attn_mask", expanded_attn_mask)
+            print("causal_mask", combined_attention_mask)
             combined_attention_mask = (
                 expanded_attn_mask if combined_attention_mask is None else expanded_attn_mask + combined_attention_mask
             )
+            print("combined_attention_mask", combined_attention_mask)
+
+            # From PyTorch 2.1 onwards, F.scaled_dot_product_attention with the memory-efficient attention backend
+            # does not support unattended sequences in the attention mask. Details: https://github.com/huggingface/transformers/pull/26572
+            if input_shape[-1] > 1 and is_torch_sdpa_available() and attention_mask.device.type == "cuda":
+                _inplace_unmask_unattended(combined_attention_mask, attention_mask)
+
         return combined_attention_mask
 
     @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
