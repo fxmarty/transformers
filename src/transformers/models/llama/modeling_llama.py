@@ -51,35 +51,6 @@ logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "LlamaConfig"
 
-def set_sdpa_attention_mask(batch_size: int, attention_mask: Optional[torch.Tensor], padding_mask: Optional[torch.Tensor], kv_seq_len: int, query_length: int):
-    """
-    Prepares the correct argument to be used by torch.nn.functional.scaled_dot_product_attention.
-
-    We ignore the attention mask in some cases for batch_size = 1 to allow to dispatch to the flash attention kernel.
-
-    NOTE: As of PyTorch 2.1, SDPA can not dispatch to flash attention in case an
-    attention mask passed. Possible solution: use nested tensors.
-    """
-    if batch_size == 1 and padding_mask is None:
-        if query_length == 1:  # For query_length == 1, causal attention and bi-directional attention are the same.
-            is_causal = False
-            attention_mask = None
-        elif kv_seq_len == query_length:
-            is_causal = True
-            attention_mask = None
-        else:
-            # Unfortunately, for query_length > 1, we can not generally ignore the attention mask, as SDPA causal mask generation
-            # may be wrong. We set is_causal=False in SDPA and rely on Transformers attention_mask instead.
-            # Reference: https://github.com/pytorch/pytorch/issues/108108
-            is_causal = False
-    elif attention_mask is not None:
-        is_causal = False
-    else:
-        is_causal = True
-    
-    return attention_mask, is_causal
-
-
 
 def _get_unpad_data(padding_mask):
     seqlens_in_batch = padding_mask.sum(dim=-1, dtype=torch.int32)
@@ -692,6 +663,35 @@ class LlamaSDPAAttention(LlamaAttention):
     SDPA API.
     """
 
+    @staticmethod
+    def set_sdpa_attention_mask(batch_size: int, attention_mask: Optional[torch.Tensor], padding_mask: Optional[torch.Tensor], kv_seq_len: int, query_length: int):
+        """
+        Prepares the correct argument to be used by torch.nn.functional.scaled_dot_product_attention.
+
+        We ignore the attention mask in some cases for batch_size = 1 to allow to dispatch to the flash attention kernel.
+
+        NOTE: As of PyTorch 2.1, SDPA can not dispatch to flash attention in case an
+        attention mask passed. Possible solution: use nested tensors.
+        """
+        if batch_size == 1 and padding_mask is None:
+            if query_length == 1:  # For query_length == 1, causal attention and bi-directional attention are the same.
+                is_causal = False
+                attention_mask = None
+            elif kv_seq_len == query_length:
+                is_causal = True
+                attention_mask = None
+            else:
+                # Unfortunately, for query_length > 1, we can not generally ignore the attention mask, as SDPA causal mask generation
+                # may be wrong. We set is_causal=False in SDPA and rely on Transformers attention_mask instead.
+                # Reference: https://github.com/pytorch/pytorch/issues/108108
+                is_causal = False
+        elif attention_mask is not None:
+            is_causal = False
+        else:
+            is_causal = True
+        
+        return attention_mask, is_causal
+
     # Adapted from LlamaAttention.forward
     def forward(
         self,
@@ -759,7 +759,7 @@ class LlamaSDPAAttention(LlamaAttention):
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
         # NOTE: Llama does not use dropout in the attention, hence the hard-coded dropout_p=0.0 independent of self.training.
-        attention_mask, is_causal = set_sdpa_attention_mask(batch_size, attention_mask, padding_mask, kv_seq_len, query_length)
+        attention_mask, is_causal = LlamaSDPAAttention.set_sdpa_attention_mask(batch_size, attention_mask, padding_mask, kv_seq_len, query_length)
 
         attn_output = torch.nn.functional.scaled_dot_product_attention(
             query_states, key_states, value_states, attn_mask=attention_mask, dropout_p=0.0, is_causal=is_causal
