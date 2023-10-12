@@ -147,7 +147,7 @@ def _unmask_unattended(expanded_mask: torch.Tensor, attention_mask: torch.Tensor
     # Find the batch indexes that have unattended tokens on the leftmost side (e.g. [0, 0, 1, 1, 1]), for which the first rows of the
     # expanded mask will be completely unattended.
     left_masked_rows = torch.where(indices > 0)[0]
-    
+
     if left_masked_rows.shape[0] == 0:
         return expanded_mask
     indices = indices[left_masked_rows]
@@ -156,11 +156,14 @@ def _unmask_unattended(expanded_mask: torch.Tensor, attention_mask: torch.Tensor
     range_tensor = torch.arange(max_len).unsqueeze(0)
     range_tensor = range_tensor.repeat(indices.size(0), 1)
 
-    range_tensor[range_tensor >= indices] = 0 # Avoid unmasking tokens at relevant target positions (on the row axis), by rather unmasking possibly several times the first row that should always be unmasked as we filtered out the batch above.
+    range_tensor[
+        range_tensor >= indices
+    ] = 0  # Avoid unmasking tokens at relevant target positions (on the row axis), by rather unmasking possibly several times the first row that should always be unmasked as we filtered out the batch above.
 
     expanded_mask[left_masked_rows.unsqueeze(1), 0, range_tensor] = 0
 
     return expanded_mask
+
 
 class LlamaRMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
@@ -663,7 +666,14 @@ class LlamaSDPAAttention(LlamaAttention):
     SDPA API.
     """
 
-    def set_sdpa_attention_mask(self, batch_size: int, attention_mask: Optional[torch.Tensor], padding_mask: Optional[torch.Tensor], kv_seq_len: int, query_length: int):
+    def set_sdpa_attention_mask(
+        self,
+        batch_size: int,
+        attention_mask: Optional[torch.Tensor],
+        padding_mask: Optional[torch.Tensor],
+        kv_seq_len: int,
+        query_length: int,
+    ):
         """
         Prepares the correct argument to be used by torch.nn.functional.scaled_dot_product_attention.
 
@@ -688,7 +698,7 @@ class LlamaSDPAAttention(LlamaAttention):
             is_causal = False
         else:
             is_causal = True
-        
+
         return attention_mask, is_causal
 
     # Adapted from LlamaAttention.forward
@@ -704,7 +714,15 @@ class LlamaSDPAAttention(LlamaAttention):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         if output_attentions:
             # NOTE: output_attentions=True can not be supported when using SDPA.
-            super().forward(hidden_states=hidden_states, attention_mask=attention_mask, position_ids=position_ids, past_key_value=past_key_value, output_attentions=output_attentions, use_cache=use_cache, padding_mask=padding_mask)
+            super().forward(
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_value=past_key_value,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                padding_mask=padding_mask,
+            )
         bsz, q_len, _ = hidden_states.size()
 
         if self.config.pretraining_tp > 1:
@@ -757,7 +775,9 @@ class LlamaSDPAAttention(LlamaAttention):
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
         # NOTE: Llama does not use dropout in the attention, hence the hard-coded dropout_p=0.0 independent of self.training.
-        attention_mask, is_causal = self.set_sdpa_attention_mask(batch_size, attention_mask, padding_mask, kv_seq_len, query_length)
+        attention_mask, is_causal = self.set_sdpa_attention_mask(
+            batch_size, attention_mask, padding_mask, kv_seq_len, query_length
+        )
 
         attn_output = torch.nn.functional.scaled_dot_product_attention(
             query_states, key_states, value_states, attn_mask=attention_mask, dropout_p=0.0, is_causal=is_causal

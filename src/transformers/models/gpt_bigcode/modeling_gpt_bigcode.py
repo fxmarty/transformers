@@ -32,8 +32,8 @@ from ...utils import (
     add_code_sample_docstrings,
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
-    logging,
     is_torch_sdpa_available,
+    logging,
 )
 from .configuration_gpt_bigcode import GPTBigCodeConfig
 
@@ -92,7 +92,7 @@ def _unmask_unattended(expanded_mask: torch.BoolTensor, attention_mask: torch.Te
     # Find the batch indexes that have unattended tokens on the leftmost side (e.g. [0, 0, 1, 1, 1]), for which the first rows of the
     # expanded mask will be completely unattended.
     left_masked_rows = torch.where(indices > 0)[0]
-    
+
     if left_masked_rows.shape[0] == 0:
         return expanded_mask
     indices = indices[left_masked_rows]
@@ -101,11 +101,14 @@ def _unmask_unattended(expanded_mask: torch.BoolTensor, attention_mask: torch.Te
     range_tensor = torch.arange(max_len).unsqueeze(0)
     range_tensor = range_tensor.repeat(indices.size(0), 1)
 
-    range_tensor[range_tensor >= indices] = 0 # Avoid unmasking tokens at relevant target positions (on the row axis), by rather unmasking possibly several times the first row that should always be unmasked as we filtered out the batch above.
+    range_tensor[
+        range_tensor >= indices
+    ] = 0  # Avoid unmasking tokens at relevant target positions (on the row axis), by rather unmasking possibly several times the first row that should always be unmasked as we filtered out the batch above.
 
     expanded_mask[left_masked_rows.unsqueeze(1), range_tensor] = True
 
     return expanded_mask
+
 
 class GPTBigCodeAttention(nn.Module):
     def __init__(self, config, is_cross_attention=False, layer_idx=None):
@@ -229,7 +232,7 @@ class GPTBigCodeAttention(nn.Module):
             attn_output = torch.bmm(attn_weights.view(attn_view), value).view(query_shape)
         else:
             attn_output = torch.matmul(attn_weights, value)
-        
+
         return attn_output, attn_weights
 
     def forward(
@@ -291,8 +294,17 @@ class GPTBigCodeAttention(nn.Module):
 
         return outputs  # a, present, (attentions)
 
+
 class GPTBigCodeSDPAAttention(GPTBigCodeAttention):
-    def set_sdpa_attention_mask(self, batch_size: int, attention_mask: Optional[torch.Tensor], kv_seq_len: int, query_length: int, query_device, query_dtype):
+    def set_sdpa_attention_mask(
+        self,
+        batch_size: int,
+        attention_mask: Optional[torch.Tensor],
+        kv_seq_len: int,
+        query_length: int,
+        query_device,
+        query_dtype,
+    ):
         """
         Prepares the correct argument to be used by torch.nn.functional.scaled_dot_product_attention.
 
@@ -325,7 +337,7 @@ class GPTBigCodeSDPAAttention(GPTBigCodeAttention):
                 attention_mask = attention_mask.transpose(1, 2)
         else:
             is_causal = True
-        
+
         return attention_mask, is_causal
 
     def _attn(self, query, key, value, attention_mask=None, head_mask=None):
@@ -359,14 +371,22 @@ class GPTBigCodeSDPAAttention(GPTBigCodeAttention):
             # value = [batch_size, 1, past_length, head_dim]
             # which is unfortunate. Hopefully can be changed in the future. These expand should not be too expansive as they do not do memory copy.
             key = key.expand(-1, self.num_heads, -1, -1)
-            value = value.expand(-1, self.num_heads, -1, -1)            
+            value = value.expand(-1, self.num_heads, -1, -1)
 
         dropout_p = self.dropout_prob_attn if self.training else 0.0
 
-        attention_mask, is_causal = self.set_sdpa_attention_mask(batch_size, attention_mask, kv_seq_len, query_length, query_device=query.device, query_dtype=query.dtype)
-        
+        attention_mask, is_causal = self.set_sdpa_attention_mask(
+            batch_size, attention_mask, kv_seq_len, query_length, query_device=query.device, query_dtype=query.dtype
+        )
+
         sdpa_result = torch.nn.functional.scaled_dot_product_attention(
-            query, key, value, attn_mask=attention_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale,
+            query,
+            key,
+            value,
+            attn_mask=attention_mask,
+            dropout_p=dropout_p,
+            is_causal=is_causal,
+            scale=scale,
         )
 
         if self.multi_query:
@@ -397,7 +417,14 @@ class GPTBigCodeSDPAAttention(GPTBigCodeAttention):
         if output_attentions or head_mask is not None:
             super().forward(
                 hidden_states=hidden_states,
-                layer_past=layer_past, attention_mask=attention_mask, head_mask=head_mask, encoder_hidden_states=encoder_hidden_states, encoder_attention_mask=encoder_attention_mask, use_cache=use_cache, output_attentions=output_attentions)
+                layer_past=layer_past,
+                attention_mask=attention_mask,
+                head_mask=head_mask,
+                encoder_hidden_states=encoder_hidden_states,
+                encoder_attention_mask=encoder_attention_mask,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+            )
 
         if encoder_hidden_states is not None:
             if not hasattr(self, "q_attn") or not self.is_cross_attention:
@@ -795,7 +822,7 @@ class GPTBigCodeModel(GPTBigCodePreTrainedModel):
             # produces nans if sequences are completely unattended in the attention mask. Details: https://github.com/pytorch/pytorch/issues/110213
             if query_length > 1 and is_torch_sdpa_available() and attention_mask.device.type == "cuda":
                 self_attention_mask = _unmask_unattended(self_attention_mask, attention_mask)
-            
+
             padding_mask = attention_mask if 0 in attention_mask else None
 
         if isinstance(self.h[0].attn, GPTBigCodeSDPAAttention):
@@ -804,9 +831,9 @@ class GPTBigCodeModel(GPTBigCodePreTrainedModel):
             self_attention_mask = torch.where(
                 self_attention_mask,
                 torch.full([], 0.0, dtype=dtype, device=self_attention_mask.device),
-                torch.full([], torch.finfo(self.wte.weight.dtype).min, dtype=dtype, device=self_attention_mask.device)
+                torch.full([], torch.finfo(self.wte.weight.dtype).min, dtype=dtype, device=self_attention_mask.device),
             )
-        
+
         # MQA models: (batch_size, query_length, n_heads, key_length)
         # MHA models: (batch_size, n_heads, query_length, key_length)
         attention_mask = self_attention_mask.unsqueeze(2 if self.multi_query else 1)
