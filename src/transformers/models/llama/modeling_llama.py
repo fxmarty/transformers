@@ -51,6 +51,35 @@ logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "LlamaConfig"
 
+def set_sdpa_attention_mask(batch_size: int, attention_mask: Optional[torch.Tensor], padding_mask: Optional[torch.Tensor], kv_seq_len: int, query_length: int):
+    """
+    Prepares the correct argument to be used by torch.nn.functional.scaled_dot_product_attention.
+
+    We ignore the attention mask in some cases for batch_size = 1 to allow to dispatch to the flash attention kernel.
+
+    NOTE: As of PyTorch 2.1, SDPA can not dispatch to flash attention in case an
+    attention mask passed. Possible solution: use nested tensors.
+    """
+    if batch_size == 1 and padding_mask is None:
+        if query_length == 1:  # For query_length == 1, causal attention and bi-directional attention are the same.
+            is_causal = False
+            attention_mask = None
+        elif kv_seq_len == query_length:
+            is_causal = True
+            attention_mask = None
+        else:
+            # Unfortunately, for query_length > 1, we can not generally ignore the attention mask, as SDPA causal mask generation
+            # may be wrong. We set is_causal=False in SDPA and rely on Transformers attention_mask instead.
+            # Reference: https://github.com/pytorch/pytorch/issues/108108
+            is_causal = False
+    elif attention_mask is not None:
+        is_causal = False
+    else:
+        is_causal = True
+    
+    return attention_mask, is_causal
+
+
 
 def _get_unpad_data(padding_mask):
     seqlens_in_batch = padding_mask.sum(dim=-1, dtype=torch.int32)
@@ -97,7 +126,7 @@ def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] 
     return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
 
 
-def _inplace_unmask_unattended(expanded_mask: torch.Tensor, attention_mask: torch.Tensor):
+def _unmask_unattended(expanded_mask: torch.Tensor, attention_mask: torch.Tensor):
     """
     Attend to all tokens in masked rows from the expanded attention mask, for example the relevant first rows when using left padding.
     This is required by F.scaled_dot_product_attention memory-efficient attention path.
@@ -139,12 +168,6 @@ def _inplace_unmask_unattended(expanded_mask: torch.Tensor, attention_mask: torc
       [0, 1, 0],
       [0, 1, 1]]]]
     """
-    bsz = attention_mask.shape[0]
-
-
-    #masked_rows = torch.where(~torch.all(attention_mask, dim=1))[0]
-    #attention_mask_masked = attention_mask[masked_rows]
-
     # Get the index of the first non-zero value for every sample in the batch.
     # In the above example, indices = [[2], [0], [1]]]
     tmp = torch.arange(attention_mask.shape[1], 0, -1)
@@ -154,29 +177,19 @@ def _inplace_unmask_unattended(expanded_mask: torch.Tensor, attention_mask: torc
     # expanded mask will be completely unattended.
     left_masked_rows = torch.where(indices > 0)[0]
     
-    print("left_masked_rows", left_masked_rows.shape)
     if left_masked_rows.shape[0] == 0:
-        return
+        return expanded_mask
     indices = indices[left_masked_rows]
 
-    #print("indices", indices)
     max_len = torch.max(indices)
     range_tensor = torch.arange(max_len).unsqueeze(0)
     range_tensor = range_tensor.repeat(indices.size(0), 1)
 
-    #print("range_tensor[range_tensor >= indices]", range_tensor[range_tensor >= indices].shape)
-    #print("range_tensor[range_tensor >= indices]", range_tensor[range_tensor >= indices])
-    print("indices", indices)
-    print("range_tensor bef", range_tensor)
     range_tensor[range_tensor >= indices] = 0 # Avoid unmasking tokens at relevant target positions (on the row axis), by rather unmasking possibly several times the first row that should always be unmasked as we filtered out the batch above.
-
-    print("range_tensor", range_tensor)
-    print("expanded_mask", expanded_mask)
 
     expanded_mask[left_masked_rows.unsqueeze(1), 0, range_tensor] = 0
 
-    print("expanded_mask aft", expanded_mask)
-
+    return expanded_mask
 
 class LlamaRMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
@@ -745,30 +758,8 @@ class LlamaSDPAAttention(LlamaAttention):
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
-        # NOTE: Llama does not use dropout in the attention, hence the hard-coded
-        # dropout_p=0.0 independent of self.training.
-        # The batch_size = 1 case is handled separately to allow to dispatch on flash attention
-        # kernel.
-        # NOTE: As of PyTorch 2.1, SDPA can not dispatch to flash attention v2 in case an
-        # attention mask passed. Possible solution: use nested tensors.
-
-        # Below, we ignore the attention mask in some cases to allow the dispatch to flash attention.
-        if batch_size == 1 and padding_mask is None:
-            if query_length == 1:
-                is_causal = False
-                attention_mask = None
-            elif kv_seq_len == query_length:
-                is_causal = True
-                attention_mask = None
-            else:
-                # Unfortunately, for query_length > 1, we can not generally ignore the attention mask, as SDPA causal mask generation
-                # may be wrong. We set is_causal=False in SDPA and rely on Transformers attention_mask instead.
-                # Reference: https://github.com/pytorch/pytorch/issues/108108
-                is_causal = False
-        elif attention_mask is not None:
-            is_causal = False
-        else:
-            is_causal = True
+        # NOTE: Llama does not use dropout in the attention, hence the hard-coded dropout_p=0.0 independent of self.training.
+        attention_mask, is_causal = set_sdpa_attention_mask(batch_size, attention_mask, padding_mask, kv_seq_len, query_length)
 
         attn_output = torch.nn.functional.scaled_dot_product_attention(
             query_states, key_states, value_states, attn_mask=attention_mask, dropout_p=0.0, is_causal=is_causal
@@ -1019,22 +1010,14 @@ class LlamaModel(LlamaPreTrainedModel):
                 inputs_embeds.device
             )
 
-            # From PyTorch 2.1 onwards, F.scaled_dot_product_attention with the memory-efficient attention backend
-            # does not support unattended sequences in the attention mask. Details: https://github.com/huggingface/transformers/pull/26572
-            # if input_shape[-1] > 1 and is_torch_sdpa_available() and attention_mask.device.type == "cuda":
-            #     _inplace_unmask_padding(expanded_attn_mask, attention_mask)
-
-            print("expanded_attn_mask", expanded_attn_mask)
-            print("causal_mask", combined_attention_mask)
             combined_attention_mask = (
                 expanded_attn_mask if combined_attention_mask is None else expanded_attn_mask + combined_attention_mask
             )
-            print("combined_attention_mask", combined_attention_mask)
 
             # From PyTorch 2.1 onwards, F.scaled_dot_product_attention with the memory-efficient attention backend
-            # does not support unattended sequences in the attention mask. Details: https://github.com/huggingface/transformers/pull/26572
+            # does not support completely unattended sequences in the attention mask. Details: https://github.com/huggingface/transformers/pull/26572
             if input_shape[-1] > 1 and is_torch_sdpa_available() and attention_mask.device.type == "cuda":
-                _inplace_unmask_unattended(combined_attention_mask, attention_mask)
+                combined_attention_mask = _unmask_unattended(combined_attention_mask, attention_mask)
 
         return combined_attention_mask
 
