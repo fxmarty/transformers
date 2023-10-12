@@ -156,9 +156,8 @@ def _unmask_unattended(expanded_mask: torch.Tensor, attention_mask: torch.Tensor
     range_tensor = torch.arange(max_len).unsqueeze(0)
     range_tensor = range_tensor.repeat(indices.size(0), 1)
 
-    range_tensor[
-        range_tensor >= indices
-    ] = 0  # Avoid unmasking tokens at relevant target positions (on the row axis), by rather unmasking possibly several times the first row that should always be unmasked as we filtered out the batch above.
+    # Avoid unmasking tokens at relevant target positions (on the row axis), by rather unmasking possibly several times the first row that should always be unmasked as we filtered out the batch above.
+    range_tensor[range_tensor >= indices] = 0  
 
     expanded_mask[left_masked_rows.unsqueeze(1), 0, range_tensor] = 0
 

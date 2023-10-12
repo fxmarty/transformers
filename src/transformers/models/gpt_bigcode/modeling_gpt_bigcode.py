@@ -101,9 +101,8 @@ def _unmask_unattended(expanded_mask: torch.BoolTensor, attention_mask: torch.Te
     range_tensor = torch.arange(max_len).unsqueeze(0)
     range_tensor = range_tensor.repeat(indices.size(0), 1)
 
-    range_tensor[
-        range_tensor >= indices
-    ] = 0  # Avoid unmasking tokens at relevant target positions (on the row axis), by rather unmasking possibly several times the first row that should always be unmasked as we filtered out the batch above.
+    # Avoid unmasking tokens at relevant target positions (on the row axis), by rather unmasking possibly several times the first row that should always be unmasked as we filtered out the batch above.
+    range_tensor[range_tensor >= indices] = 0  
 
     expanded_mask[left_masked_rows.unsqueeze(1), range_tensor] = True
 
@@ -365,11 +364,11 @@ class GPTBigCodeSDPAAttention(GPTBigCodeAttention):
             value = value.unsqueeze(1)
 
             # Although these expand are not numerically useful, PyTorch 2.1 can not dispatch to mem-efficient attention
-            # and flash attention from the shapes
+            # and flash attention (No available kernel.  Aborting execution.) from the shapes
             # query = [batch_size, num_heads, query_length, head_dim]
             # key = [batch_size, 1, past_length, head_dim]
             # value = [batch_size, 1, past_length, head_dim]
-            # which is unfortunate. Hopefully can be changed in the future. These expand should not be too expansive as they do not do memory copy.
+            # which is unfortunate. Hopefully can be improved in the future. These expand should not be too expansive as they do not do memory copy.
             key = key.expand(-1, self.num_heads, -1, -1)
             value = value.expand(-1, self.num_heads, -1, -1)
 
