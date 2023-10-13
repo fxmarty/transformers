@@ -893,7 +893,6 @@ class GPTBigCodeModel(GPTBigCodePreTrainedModel):
                 torch.full([], torch.finfo(self.wte.weight.dtype).min, dtype=dtype, device=attention_mask.device),
             )
         attention_mask._float_mask = float_mask
-        print("just set float mask :)")
 
         # If a 2D or 3D attention mask is provided for the cross-attention
         # we need to make broadcastable to [batch_size, num_heads, seq_length, seq_length]
