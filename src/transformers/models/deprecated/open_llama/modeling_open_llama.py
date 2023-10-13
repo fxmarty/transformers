@@ -29,7 +29,13 @@ from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 from ....activations import ACT2FN
 from ....modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast, SequenceClassifierOutputWithPast
 from ....modeling_utils import PreTrainedModel
-from ....utils import add_start_docstrings, add_start_docstrings_to_model_forward, logging, replace_return_docstrings
+from ....utils import (
+    add_start_docstrings,
+    add_start_docstrings_to_model_forward,
+    is_torch_sdpa_available,
+    logging,
+    replace_return_docstrings,
+)
 from .configuration_open_llama import OpenLlamaConfig
 
 
@@ -45,6 +51,88 @@ except ImportError:
 
 
 _CONFIG_FOR_DOC = "OpenLlamaConfig"
+
+
+# Copied from transformers.models.llama.modeling_llama._unmask_unattended
+def _unmask_unattended(expanded_mask: torch.Tensor, attention_mask: torch.Tensor, unmasked_value: Union[bool, float]):
+    """
+    Attend to all tokens in masked rows from the expanded attention mask, for example the relevant first rows when
+    using left padding. This is required by F.scaled_dot_product_attention memory-efficient attention path. Details:
+    https://github.com/pytorch/pytorch/issues/110213
+
+    expanded_mask is [bsz, 1, tgt_seq_len, src_seq_len] or [bsz, tgt_seq_len, src_seq_len].
+
+    attention_mask is [bsz, src_seq_len].
+
+    If attention_mask is
+
+    ```
+    [[0, 0, 1]
+     [1, 1, 1]
+     [0, 1, 1]]
+    ```
+
+    and expanded_mask is (e.g. here left-padding case)
+
+    ```
+    [[[[0, 0, 0],
+       [0, 0, 0],
+       [0, 0, 1]]],
+
+     [[[1, 0, 0],
+       [1, 1, 0],
+       [1, 1, 1]]],
+
+     [[[0, 0, 0],
+       [0, 1, 0],
+       [0, 1, 1]]]]
+    ```
+
+    then the modified expanded_mask will be
+
+    ```
+    [[[[1, 1, 1],   <-- modified
+       [1, 1, 1],   <-- modified
+       [0, 0, 1]]],
+
+     [[[1, 0, 0],
+       [1, 1, 0],
+       [1, 1, 1]]],
+
+     [[[1, 1, 1],   <-- modified
+       [0, 1, 0],
+       [0, 1, 1]]]]
+    ```
+    """
+    # Get the index of the first non-zero value for every sample in the batch.
+    # In the above example, indices = [[2], [0], [1]]]
+    tmp = torch.arange(attention_mask.shape[1], 0, -1)
+    indices = torch.argmax(attention_mask.cpu() * tmp, 1, keepdim=True)
+
+    # Find the batch indexes that have unattended tokens on the leftmost side (e.g. [0, 0, 1, 1, 1]), for which the first rows of the
+    # expanded mask will be completely unattended.
+    left_masked_rows = torch.where(indices > 0)[0]
+
+    if left_masked_rows.shape[0] == 0:
+        return expanded_mask
+    indices = indices[left_masked_rows]
+
+    max_len = torch.max(indices)
+    range_tensor = torch.arange(max_len).unsqueeze(0)
+    range_tensor = range_tensor.repeat(indices.size(0), 1)
+
+    # Avoid unmasking tokens at relevant target positions (on the row axis), by rather unmasking possibly several times the first row that should always be unmasked as we filtered out the batch above.
+    range_tensor[range_tensor >= indices] = 0
+
+    mask_slice = (left_masked_rows.unsqueeze(1),)
+    if expanded_mask.dim() == 4:
+        mask_slice += (0, range_tensor)
+    else:
+        mask_slice += (range_tensor,)
+
+    expanded_mask[mask_slice] = unmasked_value
+
+    return expanded_mask
 
 
 # Copied from transformers.models.bart.modeling_bart._make_causal_mask
@@ -585,6 +673,13 @@ class OpenLlamaModel(OpenLlamaPreTrainedModel):
             combined_attention_mask = (
                 expanded_attn_mask if combined_attention_mask is None else expanded_attn_mask + combined_attention_mask
             )
+
+            # From PyTorch 2.1 onwards, F.scaled_dot_product_attention with the memory-efficient attention backend
+            # produces nans if sequences are completely unattended in the attention mask. Details: https://github.com/pytorch/pytorch/issues/110213
+            if input_shape[-1] > 1 and is_torch_sdpa_available() and attention_mask.device.type == "cuda":
+                combined_attention_mask = _unmask_unattended(
+                    combined_attention_mask, attention_mask, unmasked_value=0.0
+                )
 
         return combined_attention_mask
 

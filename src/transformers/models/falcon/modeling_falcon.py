@@ -36,6 +36,7 @@ from ...utils import (
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
     is_flash_attn_available,
+    is_torch_sdpa_available,
     logging,
 )
 from .configuration_falcon import FalconConfig
@@ -57,6 +58,88 @@ FALCON_PRETRAINED_MODEL_ARCHIVE_LIST = [
 ]
 _CHECKPOINT_FOR_DOC = "Rocketknight1/falcon-rw-1b"
 _CONFIG_FOR_DOC = "FalconConfig"
+
+
+# Copied from transformers.models.llama.modeling_llama._unmask_unattended
+def _unmask_unattended(expanded_mask: torch.Tensor, attention_mask: torch.Tensor, unmasked_value: Union[bool, float]):
+    """
+    Attend to all tokens in masked rows from the expanded attention mask, for example the relevant first rows when
+    using left padding. This is required by F.scaled_dot_product_attention memory-efficient attention path. Details:
+    https://github.com/pytorch/pytorch/issues/110213
+
+    expanded_mask is [bsz, 1, tgt_seq_len, src_seq_len] or [bsz, tgt_seq_len, src_seq_len].
+
+    attention_mask is [bsz, src_seq_len].
+
+    If attention_mask is
+
+    ```
+    [[0, 0, 1]
+     [1, 1, 1]
+     [0, 1, 1]]
+    ```
+
+    and expanded_mask is (e.g. here left-padding case)
+
+    ```
+    [[[[0, 0, 0],
+       [0, 0, 0],
+       [0, 0, 1]]],
+
+     [[[1, 0, 0],
+       [1, 1, 0],
+       [1, 1, 1]]],
+
+     [[[0, 0, 0],
+       [0, 1, 0],
+       [0, 1, 1]]]]
+    ```
+
+    then the modified expanded_mask will be
+
+    ```
+    [[[[1, 1, 1],   <-- modified
+       [1, 1, 1],   <-- modified
+       [0, 0, 1]]],
+
+     [[[1, 0, 0],
+       [1, 1, 0],
+       [1, 1, 1]]],
+
+     [[[1, 1, 1],   <-- modified
+       [0, 1, 0],
+       [0, 1, 1]]]]
+    ```
+    """
+    # Get the index of the first non-zero value for every sample in the batch.
+    # In the above example, indices = [[2], [0], [1]]]
+    tmp = torch.arange(attention_mask.shape[1], 0, -1)
+    indices = torch.argmax(attention_mask.cpu() * tmp, 1, keepdim=True)
+
+    # Find the batch indexes that have unattended tokens on the leftmost side (e.g. [0, 0, 1, 1, 1]), for which the first rows of the
+    # expanded mask will be completely unattended.
+    left_masked_rows = torch.where(indices > 0)[0]
+
+    if left_masked_rows.shape[0] == 0:
+        return expanded_mask
+    indices = indices[left_masked_rows]
+
+    max_len = torch.max(indices)
+    range_tensor = torch.arange(max_len).unsqueeze(0)
+    range_tensor = range_tensor.repeat(indices.size(0), 1)
+
+    # Avoid unmasking tokens at relevant target positions (on the row axis), by rather unmasking possibly several times the first row that should always be unmasked as we filtered out the batch above.
+    range_tensor[range_tensor >= indices] = 0
+
+    mask_slice = (left_masked_rows.unsqueeze(1),)
+    if expanded_mask.dim() == 4:
+        mask_slice += (0, range_tensor)
+    else:
+        mask_slice += (range_tensor,)
+
+    expanded_mask[mask_slice] = unmasked_value
+
+    return expanded_mask
 
 
 # NOTE(Hesslow): Unfortunately we did not fuse matmul and bias during training, this means that there's one additional quantization to bfloat16 between the operations.
@@ -222,35 +305,37 @@ class FalconDynamicNTKScalingRotaryEmbedding(FalconRotaryEmbedding):
         self.sin_cached = self.sin_cached.type(dtype)
 
 
+# Copied from transformers.models.bart.modeling_bart._make_causal_mask
 def _make_causal_mask(
-    input_ids_shape: torch.Size, device: torch.device, past_key_values_length: int
-) -> torch.BoolTensor:
+    input_ids_shape: torch.Size, dtype: torch.dtype, device: torch.device, past_key_values_length: int = 0
+):
     """
-    Make causal mask used for self-attention. This mask does not take the existing attention mask into account - it
-    just blocks tokens from attending forwards in the sequence. The output shape will be `[batch_size, 1,
-    target_length, target_length+past_key_values_length]`.
+    Make causal mask used for bi-directional self-attention.
     """
-    batch_size, target_length = input_ids_shape
+    bsz, tgt_len = input_ids_shape
+    mask = torch.full((tgt_len, tgt_len), torch.finfo(dtype).min, device=device)
+    mask_cond = torch.arange(mask.size(-1), device=device)
+    mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
+    mask = mask.to(dtype)
 
-    mask = torch.triu(torch.ones((target_length, target_length), dtype=torch.bool, device=device), diagonal=1)
-    # If past_key_values_length is 0 this is an empty tensor and the concatenation is a no-op.
-    # This code style is an unfortunate consequence of getting your TF engineer to port models; doing it this
-    # way avoids a data-dependent conditional, which will help me when I have to port this to XLA later.
-    past_mask = torch.zeros((target_length, past_key_values_length), dtype=torch.bool, device=device)
-    mask = torch.cat([past_mask, mask], dim=-1)
-    expanded_mask = mask[None, None, :, :].expand(batch_size, 1, target_length, target_length + past_key_values_length)
-    return expanded_mask
+    if past_key_values_length > 0:
+        mask = torch.cat([torch.zeros(tgt_len, past_key_values_length, dtype=dtype, device=device), mask], dim=-1)
+    return mask[None, None, :, :].expand(bsz, 1, tgt_len, tgt_len + past_key_values_length)
 
 
-def _expand_mask(mask: torch.Tensor, past_key_values_length: int) -> torch.BoolTensor:
+# Copied from transformers.models.bart.modeling_bart._expand_mask
+def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] = None):
     """
-    Expands attention_mask from `[batch_size, seq_length]` to `[batch_size, 1, seq_length, seq_length + past_length]`.
+    Expands attention_mask from `[bsz, seq_len]` to `[bsz, 1, tgt_seq_len, src_seq_len]`.
     """
-    batch_size, total_length = mask.shape
-    seq_length = total_length - past_key_values_length if past_key_values_length is not None else total_length
+    bsz, src_len = mask.size()
+    tgt_len = tgt_len if tgt_len is not None else src_len
 
-    expanded_mask = ~(mask[:, None, None, :].to(torch.bool))
-    return expanded_mask.expand(batch_size, 1, seq_length, total_length)
+    expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len).to(dtype)
+
+    inverted_mask = 1.0 - expanded_mask
+
+    return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
 
 
 def build_alibi_tensor(attention_mask: torch.Tensor, num_heads: int, dtype: torch.dtype) -> torch.Tensor:
@@ -465,33 +550,21 @@ class FalconAttention(nn.Module):
         else:
             present = None
 
-        float_min = torch.finfo(query_layer.dtype).min
-        attention_mask_float = (attention_mask * 1.0).masked_fill(attention_mask, float_min).to(query_layer.dtype)
-
         query_layer_ = query_layer.reshape(batch_size, self.num_heads, -1, self.head_dim)
         key_layer_ = key_layer.reshape(batch_size, num_kv_heads, -1, self.head_dim)
         value_layer_ = value_layer.reshape(batch_size, num_kv_heads, -1, self.head_dim)
 
         if alibi is None:
-            if hasattr(F, "scaled_dot_product_attention") and not output_attentions:
-                # TODO: deprecate this once we add FA2 support in Falcon
-                logger.warning_once(
-                    "The current implementation of Falcon calls `torch.scaled_dot_product_attention` directly, this will be deprecated in the"
-                    " future in favor of the `BetterTransformer` API. Please install the latest optimum library with `pip install -U optimum` and call "
-                    "`model.to_bettertransformer()` to benefit from `torch.scaled_dot_product_attention` and future performance optimizations."
-                )
-
+            if is_torch_sdpa_available() and not output_attentions:
                 attn_output = F.scaled_dot_product_attention(
-                    query_layer_, key_layer_, value_layer_, attention_mask_float, 0.0, is_causal=False
+                    query_layer_, key_layer_, value_layer_, attention_mask, 0.0, is_causal=False
                 )
                 attention_scores = None
             else:
                 attention_scores = query_layer_ @ key_layer_.transpose(-1, -2)
                 attention_scores /= math.sqrt(self.head_dim)
 
-                attention_scores = F.softmax(
-                    attention_scores + attention_mask_float, dim=-1, dtype=hidden_states.dtype
-                )
+                attention_scores = F.softmax(attention_scores + attention_mask, dim=-1, dtype=hidden_states.dtype)
                 attn_output = attention_scores @ value_layer_
 
             attn_output = attn_output.view(batch_size, self.num_heads, query_length, self.head_dim)
@@ -517,12 +590,12 @@ class FalconAttention(nn.Module):
             if input_dtype == torch.float16 or input_dtype == torch.bfloat16:
                 attention_scores = attention_scores.to(torch.float32)
             # Matt (HF) note: We could possibly use F.scaled_dot_product_attention here too, by
-            # adding (alibi * self.inv_norm_factor) to attention_mask_float. I think this would be mathematically
+            # adding (alibi * self.inv_norm_factor) to attention_mask. I think this would be mathematically
             # equivalent and more performant, but there might be a numerical difference. If you're reading this
             # and you'd like to experiment and maybe file a PR, feel free!
             attention_logits = attention_scores + alibi.view(batch_size, self.num_heads, 1, -1)
             attention_logits *= self.inv_norm_factor
-            attention_probs = F.softmax(attention_logits + attention_mask_float, dim=-1, dtype=hidden_states.dtype)
+            attention_probs = F.softmax(attention_logits + attention_mask, dim=-1, dtype=hidden_states.dtype)
             # [batch_size, num_heads, q_length, kv_length]
             attention_probs = self.attention_dropout(attention_probs)
 
@@ -1009,34 +1082,34 @@ class FalconModel(FalconPreTrainedModel):
     def get_input_embeddings(self):
         return self.word_embeddings
 
-    @staticmethod
-    def _prepare_attn_mask(
-        attention_mask: torch.Tensor, input_shape: Tuple[int, int], past_key_values_length: int
-    ) -> torch.BoolTensor:
-        # Create a causal mask
-        # The attention mask we receive as input should cover the whole extended sequence, including any past
-        # cache, so its shape should be [batch_size, seq_length + past_key_values_length]
-        # The output shape will be [batch_size, 1, seq_length, seq_length + past_key_values_length]
-        if input_shape[1] + past_key_values_length != attention_mask.shape[1]:
-            raise ValueError(
-                "Attention mask shape should be (batch_size, seq_length + past_key_values_length)"
-                f" but is {attention_mask.shape} with input_ids shape {input_shape} and past length"
-                f" {past_key_values_length}."
-            )
+    # Copied from transformers.models.llama.modeling_llama.LlamaModel._prepare_decoder_attention_mask
+    def _prepare_decoder_attention_mask(self, attention_mask, input_shape, inputs_embeds, past_key_values_length):
+        # create causal mask
+        # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
         combined_attention_mask = None
-        device = attention_mask.device
-        _, seq_length = input_shape
-
-        if seq_length > 1:
+        if input_shape[-1] > 1:
             combined_attention_mask = _make_causal_mask(
-                input_shape, device=device, past_key_values_length=past_key_values_length
+                input_shape,
+                inputs_embeds.dtype,
+                device=inputs_embeds.device,
+                past_key_values_length=past_key_values_length,
             )
 
-        # [batch_size, seq_length + past_key_values_length] -> [batch_size, 1, seq_length, seq_length + past_key_values_length]
-        expanded_attn_mask = _expand_mask(attention_mask, past_key_values_length=past_key_values_length)
-        combined_attention_mask = (
-            expanded_attn_mask if combined_attention_mask is None else expanded_attn_mask | combined_attention_mask
-        )
+        if attention_mask is not None:
+            # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+            expanded_attn_mask = _expand_mask(attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1]).to(
+                inputs_embeds.device
+            )
+            combined_attention_mask = (
+                expanded_attn_mask if combined_attention_mask is None else expanded_attn_mask + combined_attention_mask
+            )
+
+            # From PyTorch 2.1 onwards, F.scaled_dot_product_attention with the memory-efficient attention backend
+            # produces nans if sequences are completely unattended in the attention mask. Details: https://github.com/pytorch/pytorch/issues/110213
+            if input_shape[-1] > 1 and is_torch_sdpa_available() and attention_mask.device.type == "cuda":
+                combined_attention_mask = _unmask_unattended(
+                    combined_attention_mask, attention_mask, unmasked_value=0.0
+                )
 
         return combined_attention_mask
 
@@ -1126,10 +1199,8 @@ class FalconModel(FalconPreTrainedModel):
             else:
                 position_ids = position_ids.view(-1, seq_length).long()
 
-        causal_mask = self._prepare_attn_mask(
-            attention_mask,
-            input_shape=(batch_size, seq_length),
-            past_key_values_length=past_key_values_length,
+        causal_mask = self._prepare_decoder_attention_mask(
+            attention_mask, (batch_size, seq_length), inputs_embeds, past_key_values_length
         )
 
         for i, (block, layer_past) in enumerate(zip(self.h, past_key_values)):

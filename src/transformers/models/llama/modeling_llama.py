@@ -97,47 +97,55 @@ def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] 
     return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
 
 
-def _unmask_unattended(expanded_mask: torch.Tensor, attention_mask: torch.Tensor):
+def _unmask_unattended(expanded_mask: torch.Tensor, attention_mask: torch.Tensor, unmasked_value: Union[bool, float]):
     """
-    Attend to all tokens in masked rows from the expanded attention mask, for example the relevant first rows when using left padding.
-    This is required by F.scaled_dot_product_attention memory-efficient attention path.
-    Details: https://github.com/pytorch/pytorch/issues/110213
+    Attend to all tokens in masked rows from the expanded attention mask, for example the relevant first rows when
+    using left padding. This is required by F.scaled_dot_product_attention memory-efficient attention path. Details:
+    https://github.com/pytorch/pytorch/issues/110213
 
-    expanded_mask is [bsz, 1, tgt_seq_len, src_seq_len], attention_mask is [bsz, src_seq_len].
+    expanded_mask is [bsz, 1, tgt_seq_len, src_seq_len] or [bsz, tgt_seq_len, src_seq_len].
+
+    attention_mask is [bsz, src_seq_len].
 
     If attention_mask is
 
+    ```
     [[0, 0, 1]
      [1, 1, 1]
      [0, 1, 1]]
+    ```
 
     and expanded_mask is (e.g. here left-padding case)
 
+    ```
     [[[[0, 0, 0],
        [0, 0, 0],
        [0, 0, 1]]],
 
-    [[[1, 0, 0],
-      [1, 1, 0],
-      [1, 1, 1]]],
+     [[[1, 0, 0],
+       [1, 1, 0],
+       [1, 1, 1]]],
 
-    [[[0, 0, 0],
-      [0, 1, 0],
-      [0, 1, 1]]]]
+     [[[0, 0, 0],
+       [0, 1, 0],
+       [0, 1, 1]]]]
+    ```
 
     then the modified expanded_mask will be
 
-    [[[[1, 1, 1],    <-- modified
-       [1, 1, 1],    <-- modified
+    ```
+    [[[[1, 1, 1],   <-- modified
+       [1, 1, 1],   <-- modified
        [0, 0, 1]]],
 
-    [[[1, 0, 0],
-      [1, 1, 0],
-      [1, 1, 1]]],
+     [[[1, 0, 0],
+       [1, 1, 0],
+       [1, 1, 1]]],
 
-    [[[1, 1, 1],    <-- modified
-      [0, 1, 0],
-      [0, 1, 1]]]]
+     [[[1, 1, 1],   <-- modified
+       [0, 1, 0],
+       [0, 1, 1]]]]
+    ```
     """
     # Get the index of the first non-zero value for every sample in the batch.
     # In the above example, indices = [[2], [0], [1]]]
@@ -157,9 +165,15 @@ def _unmask_unattended(expanded_mask: torch.Tensor, attention_mask: torch.Tensor
     range_tensor = range_tensor.repeat(indices.size(0), 1)
 
     # Avoid unmasking tokens at relevant target positions (on the row axis), by rather unmasking possibly several times the first row that should always be unmasked as we filtered out the batch above.
-    range_tensor[range_tensor >= indices] = 0  
+    range_tensor[range_tensor >= indices] = 0
 
-    expanded_mask[left_masked_rows.unsqueeze(1), 0, range_tensor] = 0
+    mask_slice = (left_masked_rows.unsqueeze(1),)
+    if expanded_mask.dim() == 4:
+        mask_slice += (0, range_tensor)
+    else:
+        mask_slice += (range_tensor,)
+
+    expanded_mask[mask_slice] = unmasked_value
 
     return expanded_mask
 
@@ -676,10 +690,11 @@ class LlamaSDPAAttention(LlamaAttention):
         """
         Prepares the correct argument to be used by torch.nn.functional.scaled_dot_product_attention.
 
-        We ignore the attention mask in some cases for batch_size = 1 to allow to dispatch to the flash attention kernel.
+        We ignore the attention mask in some cases for batch_size = 1 to allow to dispatch to the flash attention
+        kernel.
 
-        NOTE: As of PyTorch 2.1, SDPA can not dispatch to flash attention in case an
-        attention mask passed. Possible solution: use nested tensors.
+        NOTE: As of PyTorch 2.1, SDPA can not dispatch to flash attention in case an attention mask passed. Possible
+        solution: use nested tensors.
         """
         if batch_size == 1 and padding_mask is None:
             if query_length == 1:  # For query_length == 1, causal attention and bi-directional attention are the same.
@@ -713,7 +728,7 @@ class LlamaSDPAAttention(LlamaAttention):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         if output_attentions:
             # NOTE: output_attentions=True can not be supported when using SDPA.
-            super().forward(
+            return super().forward(
                 hidden_states=hidden_states,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
@@ -1008,7 +1023,7 @@ class LlamaModel(LlamaPreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
-    # Copied from transformers.models.bart.modeling_bart.BartDecoder._prepare_decoder_attention_mask
+    # Adapted from transformers.models.bart.modeling_bart.BartDecoder._prepare_decoder_attention_mask
     def _prepare_decoder_attention_mask(self, attention_mask, input_shape, inputs_embeds, past_key_values_length):
         # create causal mask
         # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
@@ -1026,7 +1041,6 @@ class LlamaModel(LlamaPreTrainedModel):
             expanded_attn_mask = _expand_mask(attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1]).to(
                 inputs_embeds.device
             )
-
             combined_attention_mask = (
                 expanded_attn_mask if combined_attention_mask is None else expanded_attn_mask + combined_attention_mask
             )
@@ -1034,7 +1048,9 @@ class LlamaModel(LlamaPreTrainedModel):
             # From PyTorch 2.1 onwards, F.scaled_dot_product_attention with the memory-efficient attention backend
             # produces nans if sequences are completely unattended in the attention mask. Details: https://github.com/pytorch/pytorch/issues/110213
             if input_shape[-1] > 1 and is_torch_sdpa_available() and attention_mask.device.type == "cuda":
-                combined_attention_mask = _unmask_unattended(combined_attention_mask, attention_mask)
+                combined_attention_mask = _unmask_unattended(
+                    combined_attention_mask, attention_mask, unmasked_value=0.0
+                )
 
         return combined_attention_mask
 

@@ -79,10 +79,56 @@ def masked_softmax(x: torch.Tensor, mask: torch.Tensor, mask_value: torch.Tensor
     return x
 
 
-# Adapted from transformers.llama.modeling_llama._unmask_unattended
-def _unmask_unattended(expanded_mask: torch.BoolTensor, attention_mask: torch.Tensor):
+# Copied from transformers.models.llama.modeling_llama._unmask_unattended
+def _unmask_unattended(expanded_mask: torch.Tensor, attention_mask: torch.Tensor, unmasked_value: Union[bool, float]):
     """
-    expanded_mask is [bsz, tgt_seq_len, src_seq_len], attention_mask is [bsz, src_seq_len].
+    Attend to all tokens in masked rows from the expanded attention mask, for example the relevant first rows when
+    using left padding. This is required by F.scaled_dot_product_attention memory-efficient attention path. Details:
+    https://github.com/pytorch/pytorch/issues/110213
+
+    expanded_mask is [bsz, 1, tgt_seq_len, src_seq_len] or [bsz, tgt_seq_len, src_seq_len].
+
+    attention_mask is [bsz, src_seq_len].
+
+    If attention_mask is
+
+    ```
+    [[0, 0, 1]
+     [1, 1, 1]
+     [0, 1, 1]]
+    ```
+
+    and expanded_mask is (e.g. here left-padding case)
+
+    ```
+    [[[[0, 0, 0],
+       [0, 0, 0],
+       [0, 0, 1]]],
+
+     [[[1, 0, 0],
+       [1, 1, 0],
+       [1, 1, 1]]],
+
+     [[[0, 0, 0],
+       [0, 1, 0],
+       [0, 1, 1]]]]
+    ```
+
+    then the modified expanded_mask will be
+
+    ```
+    [[[[1, 1, 1],   <-- modified
+       [1, 1, 1],   <-- modified
+       [0, 0, 1]]],
+
+     [[[1, 0, 0],
+       [1, 1, 0],
+       [1, 1, 1]]],
+
+     [[[1, 1, 1],   <-- modified
+       [0, 1, 0],
+       [0, 1, 1]]]]
+    ```
     """
     # Get the index of the first non-zero value for every sample in the batch.
     # In the above example, indices = [[2], [0], [1]]]
@@ -102,9 +148,15 @@ def _unmask_unattended(expanded_mask: torch.BoolTensor, attention_mask: torch.Te
     range_tensor = range_tensor.repeat(indices.size(0), 1)
 
     # Avoid unmasking tokens at relevant target positions (on the row axis), by rather unmasking possibly several times the first row that should always be unmasked as we filtered out the batch above.
-    range_tensor[range_tensor >= indices] = 0  
+    range_tensor[range_tensor >= indices] = 0
 
-    expanded_mask[left_masked_rows.unsqueeze(1), range_tensor] = True
+    mask_slice = (left_masked_rows.unsqueeze(1),)
+    if expanded_mask.dim() == 4:
+        mask_slice += (0, range_tensor)
+    else:
+        mask_slice += (range_tensor,)
+
+    expanded_mask[mask_slice] = unmasked_value
 
     return expanded_mask
 
@@ -149,6 +201,7 @@ class GPTBigCodeAttention(nn.Module):
 
         self.attn_dropout = nn.Dropout(config.attn_pdrop)
         self.resid_dropout = nn.Dropout(config.resid_pdrop)
+        self.attn_pdrop = config.attn_pdrop
 
     def _get_mask_value(self, device, dtype):
         # torch.where expects a tensor. We use a cache to avoid recreating it every time.
@@ -307,10 +360,11 @@ class GPTBigCodeSDPAAttention(GPTBigCodeAttention):
         """
         Prepares the correct argument to be used by torch.nn.functional.scaled_dot_product_attention.
 
-        We ignore the attention mask in some cases for batch_size = 1 to allow to dispatch to the flash attention kernel.
+        We ignore the attention mask in some cases for batch_size = 1 to allow to dispatch to the flash attention
+        kernel.
 
-        NOTE: As of PyTorch 2.1, SDPA can not dispatch to flash attention in case an
-        attention mask passed. Possible solution: use nested tensors.
+        NOTE: As of PyTorch 2.1, SDPA can not dispatch to flash attention in case an attention mask passed. Possible
+        solution: use nested tensors.
         """
         if batch_size == 1 and attention_mask is not None and attention_mask._padding_mask is None:
             if query_length == 1:  # For query_length == 1, causal attention and bi-directional attention are the same.
@@ -328,12 +382,12 @@ class GPTBigCodeSDPAAttention(GPTBigCodeAttention):
                 if self.multi_query:
                     # gpt_bigcode using MQA has the bad taste to use a causal mask with shape
                     # [batch_size, target_length, 1, source_length], not compatible with SDPA, hence this transpose.
-                    attention_mask = attention_mask.transpose(1, 2)
+                    attention_mask = attention_mask._float_mask.transpose(1, 2)
         elif attention_mask is not None:
             is_causal = False
 
             if self.multi_query:
-                attention_mask = attention_mask.transpose(1, 2)
+                attention_mask = attention_mask._float_mask.transpose(1, 2)
         else:
             is_causal = True
 
@@ -371,8 +425,10 @@ class GPTBigCodeSDPAAttention(GPTBigCodeAttention):
             # which is unfortunate. Hopefully can be improved in the future. These expand should not be too expansive as they do not do memory copy.
             key = key.expand(-1, self.num_heads, -1, -1)
             value = value.expand(-1, self.num_heads, -1, -1)
+        else:
+            query_length = query_shape[-1]
 
-        dropout_p = self.dropout_prob_attn if self.training else 0.0
+        dropout_p = self.attn_pdrop if self.training else 0.0
 
         attention_mask, is_causal = self.set_sdpa_attention_mask(
             batch_size, attention_mask, kv_seq_len, query_length, query_device=query.device, query_dtype=query.dtype
@@ -392,12 +448,12 @@ class GPTBigCodeSDPAAttention(GPTBigCodeAttention):
             # (batch_size, num_heads, seq_len, head_dim) --> (batch_size, seq_len, num_heads, head_dim)
             sdpa_result = sdpa_result.transpose(1, 2)
 
-            # Reshape is kind of expensive here (as here it does a memory copy)
-            # but I did not manage to make away without it.
+            # Reshape is kind of expensive here, as it does a memory copy,
+            # but I did not manage to make away without it (logits do not match when using view)
             # (batch_size, seq_len, num_heads, head_dim) --> (batch_size, seq_len, num_heads * head_dim)
             sdpa_result = sdpa_result.reshape(query_shape)
 
-        return sdpa_result
+        return sdpa_result, None
 
     def forward(
         self,
@@ -413,18 +469,6 @@ class GPTBigCodeSDPAAttention(GPTBigCodeAttention):
         Tuple[torch.Tensor, Optional[torch.Tensor]],
         Tuple[torch.Tensor, Optional[torch.Tensor], Tuple[torch.Tensor, ...]],
     ]:
-        if output_attentions or head_mask is not None:
-            super().forward(
-                hidden_states=hidden_states,
-                layer_past=layer_past,
-                attention_mask=attention_mask,
-                head_mask=head_mask,
-                encoder_hidden_states=encoder_hidden_states,
-                encoder_attention_mask=encoder_attention_mask,
-                use_cache=use_cache,
-                output_attentions=output_attentions,
-            )
-
         if encoder_hidden_states is not None:
             if not hasattr(self, "q_attn") or not self.is_cross_attention:
                 raise ValueError(
@@ -454,8 +498,13 @@ class GPTBigCodeSDPAAttention(GPTBigCodeAttention):
 
         key, value = key_value.split((self.head_dim, self.head_dim), dim=-1)
 
-        # NOTE: Difference with the original implementation: there is no need to transpose the key here, as SDPA expects seq_length to be at index -2
-        attn_output, attn_weights = self._attn(query, key, value, attention_mask, head_mask)
+        if not output_attentions and head_mask is None:
+            # Difference with the original implementation: there is no need to transpose the key here,
+            # as SDPA expects seq_length to be at index -2 for the key as well
+            attn_output, attn_weights = self._attn(query, key, value, attention_mask, head_mask)
+        else:
+            # output_attentions=True, head_mask can not be supported when using SDPA.
+            attn_output, attn_weights = super()._attn(query, key.transpose(-1, -2), value, attention_mask, head_mask)
 
         if not self.multi_query:
             attn_output = attn_output.transpose(1, 2).reshape(hidden_states.shape)
@@ -463,6 +512,11 @@ class GPTBigCodeSDPAAttention(GPTBigCodeAttention):
         attn_output = self.resid_dropout(attn_output)
 
         outputs = (attn_output, present)
+        if output_attentions:
+            if self.multi_query:
+                # Transpose to return weights in the usual format (batch_size, num_heads, query_length, key_length)
+                attn_weights = attn_weights.transpose(1, 2)
+            outputs += (attn_weights,)
 
         return outputs
 
@@ -820,23 +874,26 @@ class GPTBigCodeModel(GPTBigCodePreTrainedModel):
             # From PyTorch 2.1 onwards, F.scaled_dot_product_attention with the memory-efficient attention backend
             # produces nans if sequences are completely unattended in the attention mask. Details: https://github.com/pytorch/pytorch/issues/110213
             if query_length > 1 and is_torch_sdpa_available() and attention_mask.device.type == "cuda":
-                self_attention_mask = _unmask_unattended(self_attention_mask, attention_mask)
+                self_attention_mask = _unmask_unattended(self_attention_mask, attention_mask, unmasked_value=True)
 
             padding_mask = attention_mask if 0 in attention_mask else None
-
-        if isinstance(self.h[0].attn, GPTBigCodeSDPAAttention):
-            # SDPA with a custom mask is much faster in fp16/fp32 dtype rather than bool. Cast here to floating point instead of every layer.
-            dtype = self.wte.weight.dtype
-            self_attention_mask = torch.where(
-                self_attention_mask,
-                torch.full([], 0.0, dtype=dtype, device=self_attention_mask.device),
-                torch.full([], torch.finfo(self.wte.weight.dtype).min, dtype=dtype, device=self_attention_mask.device),
-            )
 
         # MQA models: (batch_size, query_length, n_heads, key_length)
         # MHA models: (batch_size, n_heads, query_length, key_length)
         attention_mask = self_attention_mask.unsqueeze(2 if self.multi_query else 1)
         attention_mask._padding_mask = padding_mask
+
+        float_mask = None
+        if head_mask is None and not output_attentions:
+            # SDPA with a custom mask is much faster in fp16/fp32 dtype rather than bool. Cast here to floating point instead of at every layer.
+            dtype = self.wte.weight.dtype
+            float_mask = torch.where(
+                attention_mask,
+                torch.full([], 0.0, dtype=dtype, device=attention_mask.device),
+                torch.full([], torch.finfo(self.wte.weight.dtype).min, dtype=dtype, device=attention_mask.device),
+            )
+        attention_mask._float_mask = float_mask
+        print("just set float mask :)")
 
         # If a 2D or 3D attention mask is provided for the cross-attention
         # we need to make broadcastable to [batch_size, num_heads, seq_length, seq_length]
