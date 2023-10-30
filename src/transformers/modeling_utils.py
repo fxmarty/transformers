@@ -72,6 +72,8 @@ from .utils import (
     is_auto_gptq_available,
     is_bitsandbytes_available,
     is_flash_attn_2_available,
+    is_flash_rocm_available,
+    is_flash_nvidia_available,
     is_offline_mode,
     is_optimum_available,
     is_peft_available,
@@ -1271,7 +1273,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
                 "request support for this architecture: https://github.com/huggingface/transformers/issues/new"
             )
 
-        if not is_flash_attn_2_available():
+        if not is_flash_nvidia_available() and not is_flash_rocm_available():
             raise ImportError(
                 "Flash Attention 2 is not available. Please refer to the documentation of https://github.com/Dao-AILab/flash-attention for"
                 " installing it. Make sure to have at least the version 2.1.0"
@@ -1279,9 +1281,13 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
         else:
             flash_attention_version = version.parse(importlib.metadata.version("flash_attn"))
             is_flash_greater_than_2 = flash_attention_version >= version.parse("2.1.0")
-            if not is_flash_greater_than_2:
+            if is_flash_nvidia_available() and not is_flash_greater_than_2:
                 raise ValueError(
                     f"You need flash_attn package version to be greater or equal than 2.1. Make sure to have that version installed - detected version {flash_attention_version}"
+                )
+            elif is_flash_rocm_available() and not version.parse(importlib.metadata.version("flash_attn")) == version.parse("0.2.0"):
+                raise ValueError(
+                    f"Flash Attention support in Transformers on RoCm systems currently requires flash_attn==0.2.0 installed from https://github.com/ROCmSoftwarePlatform/flash-attention. Please make sure your install is correct."
                 )
 
         _is_bettertransformer = getattr(cls, "use_bettertransformer", False)

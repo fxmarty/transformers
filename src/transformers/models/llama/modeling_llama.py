@@ -39,14 +39,18 @@ from ...utils import (
     is_flash_attn_2_available,
     logging,
     replace_return_docstrings,
+    is_flash_rocm_available,
+    is_flash_nvidia_available,
 )
 from .configuration_llama import LlamaConfig
 
 
-if is_flash_attn_2_available():
+if is_flash_nvidia_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func
     from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
-
+elif is_flash_rocm_available():
+    from flash_attn.flash_attn_interface import flash_attn_unpadded_func as flash_attn_varlen_func
+    from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input
 
 logger = logging.get_logger(__name__)
 
@@ -409,6 +413,8 @@ class LlamaFlashAttention2(LlamaAttention):
     untouched. The only required change would be on the forward pass where it needs to correctly call the public API of
     flash attention and deal with padding tokens in case the input contains any of them.
     """
+    _FLASH_CUDA_AVAILABLE = is_flash_nvidia_available()
+    _FLASH_ROCM_AVAILABLE = is_flash_rocm_available()
 
     def forward(
         self,
@@ -459,6 +465,7 @@ class LlamaFlashAttention2(LlamaAttention):
 
         past_key_value = (key_states, value_states) if use_cache else None
 
+        # These transpose are quite ugly and could be avoided if rather support the layout [batch_size, seqlen, nheads, headdim]
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
@@ -551,9 +558,33 @@ class LlamaFlashAttention2(LlamaAttention):
 
             attn_output = pad_input(attn_output_unpad, indices_q, batch_size, query_length)
         else:
-            attn_output = flash_attn_func(
-                query_states, key_states, value_states, dropout, softmax_scale=softmax_scale, causal=self.is_causal
-            )
+            if self._FLASH_CUDA_AVAILABLE:
+                attn_output = flash_attn_func(
+                    query_states, key_states, value_states, dropout, softmax_scale=softmax_scale, causal=self.is_causal
+                )
+            elif self._FLASH_ROCM_AVAILABLE:
+                batch_size, seq_len, num_heads, head_dim = query_states.shape
+
+                cu_seqlens = torch.arange(0, (batch_size + 1) * seq_len, step=seq_len, dtype=torch.int32, device=query_states.device)
+
+                query_states = query_states.view(batch_size * seq_len, num_heads, head_dim)
+                key_states = key_states.view(batch_size * seq_len, num_heads, head_dim)
+                value_states = value_states.view(batch_size * seq_len, num_heads, head_dim)
+
+                attn_output = flash_attn_varlen_func(
+                    query_states,
+                    key_states,
+                    value_states,
+                    cu_seqlens_q=cu_seqlens,
+                    cu_seqlens_k=cu_seqlens,
+                    max_seqlen_q=seq_len,
+                    max_seqlen_k=seq_len,
+                    dropout_p=dropout,
+                    softmax_scale=softmax_scale,
+                    causal=self.is_causal,
+                )
+            else:
+                raise ValueError("There is an issue in Flash Attention install. Please make sure Flash Attention is correctly installed.")
 
         return attn_output
 

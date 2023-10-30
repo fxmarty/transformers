@@ -287,6 +287,35 @@ def is_torch_cuda_available():
     else:
         return False
 
+def is_flash_nvidia_available():
+    if is_torch_available():
+        import torch
+
+        if torch.version.cuda is None:
+            return False
+        try:
+            from flash_attn.flash_attn_interface import flash_attn_varlen_qkvpacked_func
+
+            return True
+        except Exception:
+            return False
+    else:
+        return False
+
+def is_flash_rocm_available():
+    if is_torch_available():
+        import torch
+
+        if torch.version.hip is None:
+            return False
+        try:
+            from flash_attn.flash_attn_interface import flash_attn_unpadded_kvpacked_func
+
+            return True
+        except Exception:
+            return False
+    else:
+        return False
 
 def is_torch_mps_available():
     if is_torch_available():
